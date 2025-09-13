@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toCurrencyTRY } from "@/lib/format";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { emitToast } from "@/components/ToastBus";
 
 type Item = { id: string; name: string; quantity: number; priceAtPurchase: number };
@@ -10,22 +10,31 @@ type Order = { id: string; orderNumber: string; totalAmount: number; createdAt: 
 export default function OrdersClient({ orders }: { orders: Order[] }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const sp = useSearchParams();
-  const router = useRouter();
+  const handledRef = useRef(false); // <- Strict Mode koruması
 
-  // /orders?ok=1&ord=XYZ geldiğinde toast göster ve URL'i temizle
   useEffect(() => {
+    // aynı render fazında iki kez çalışmayı engelle
+    if (handledRef.current) return;
+
     const ok = sp.get("ok");
     const ord = sp.get("ord");
     if (ok === "1") {
+      handledRef.current = true;
+
       emitToast({
         type: "success",
         title: "Satın alma tamamlandı",
         desc: ord ? `Sipariş ${ord} oluşturuldu.` : undefined,
         duration: 4000,
       });
-      router.replace("/orders", { scroll: false });
+
+      // Query paramlarını sessizce kaldır (yeniden yönlendirme yok)
+      const url = new URL(window.location.href);
+      url.searchParams.delete("ok");
+      url.searchParams.delete("ord");
+      window.history.replaceState(null, "", url);
     }
-  }, [sp, router]);
+  }, [sp]);
 
   return (
     <div className="space-y-3">
