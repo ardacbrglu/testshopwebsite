@@ -1,8 +1,8 @@
 "use client";
-
 import { useEffect, useMemo, useState } from "react";
 import { toCurrencyTRY } from "@/lib/format";
 import { useRouter } from "next/navigation";
+import { emitToast } from "@/components/ToastBus";
 
 function getCart(){ try{ return JSON.parse(localStorage.getItem("cart")||"[]"); }catch{ return []; } }
 function setCart(items){ localStorage.setItem("cart", JSON.stringify(items)); }
@@ -17,9 +17,8 @@ export default function CartPage() {
     const c = getCart();
     setCartState(c);
     const ids = c.map(x=>x.productId).join(",");
-    if(ids){
-      fetch(`/api/products?ids=${ids}`).then(r=>r.json()).then(setProducts).finally(()=>setLoading(false));
-    } else { setProducts([]); setLoading(false); }
+    const p = ids ? fetch(`/api/products?ids=${ids}`).then(r=>r.json()) : Promise.resolve([]);
+    p.then((prods)=>{ setProducts(prods); setLoading(false); });
   },[]);
 
   const lines = useMemo(()=> cart.map(it=>{
@@ -27,7 +26,7 @@ export default function CartPage() {
     return p ? { ...p, quantity: it.quantity, line: it.quantity*p.price } : null;
   }).filter(Boolean), [cart, products]);
 
-  const total = lines.reduce((s,l)=>s+l.line,0);
+  const subtotal = lines.reduce((s,l)=>s+l.line,0);
 
   function setCartBoth(next){ setCart(next); setCartState(next); }
   function updateQty(pid, q){ setCartBoth(cart.map(c=>c.productId===pid?{...c, quantity: Math.max(1,q)}:c)); }
@@ -39,11 +38,11 @@ export default function CartPage() {
       headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ items: cart })
     });
-    if(!res.ok){ const j = await res.json().catch(()=>({error:"Hata"})); alert(j.error||"Hata"); return; }
-    const j = await res.json();
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok){ emitToast({ type:"error", title:"Satın alma başarısız", desc:j.error || "Bilinmeyen hata"}); return; }
     setCartBoth([]);
-    alert(`Sipariş alındı! Order #: ${j.orderNumber}`);
-    r.push("/orders");
+    // Orders sayfasına geçerken toast göstereceğiz (ord query ile)
+    r.push(`/orders?ok=1&ord=${encodeURIComponent(j.orderNumber||"")}`);
   }
 
   if(loading) return <p>Yükleniyor...</p>;
@@ -69,9 +68,14 @@ export default function CartPage() {
               </div>
             ))}
           </div>
-          <div className="border-t border-neutral-800 mt-6 pt-4 flex items-center justify-between">
-            <div className="text-lg font-semibold">Toplam: {toCurrencyTRY(total)}</div>
-            <button className="btn" onClick={checkout}>Satın Al</button>
+
+          <div className="border-t border-neutral-800 mt-6 pt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span>Ara Toplam</span><span>{toCurrencyTRY(subtotal)}</span>
+            </div>
+            <div className="flex items-center justify-end pt-2">
+              <button className="btn" onClick={checkout}>Satın Al</button>
+            </div>
           </div>
         </>
       )}

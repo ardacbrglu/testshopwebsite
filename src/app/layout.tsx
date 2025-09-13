@@ -1,30 +1,38 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import NavBar from "../components/NavBar";
+import { Geist, Geist_Mono } from "next/font/google";
+import NavBar from "@/components/NavBar";
+import ToastBus from "@/components/ToastBus";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Test Shop Sim",
-  description: "Basit satın alma simülasyonu (Next.js + Prisma + MySQL)",
+  description: "Basit satış simülasyonu",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+// <<< sadece bu tip tanımı eksikti
+type RootLayoutProps = {
+  children: React.ReactNode;
+};
+
+export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="tr">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header className="border-b border-neutral-800 sticky top-0 z-50 bg-neutral-950/90 backdrop-blur">
-          <div className="container h-16 flex items-center">
+        <header className="border-b border-neutral-900/80 sticky top-0 z-50 bg-neutral-950/80 backdrop-blur">
+          <div className="container py-2">
             <NavBar />
           </div>
         </header>
 
-        <main className="container py-8">{children}</main>
+        <ToastBus />
 
-        <footer className="border-t border-neutral-800 mt-16">
-          <div className="container py-6 text-sm text-neutral-400">© Test Shop Sim</div>
+        <main className="container py-6">{children}</main>
+
+        <footer className="container py-8 text-sm text-neutral-400">
+          © Test Shop Sim
         </footer>
       </body>
     </html>
