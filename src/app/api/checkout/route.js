@@ -1,16 +1,4 @@
 // app/api/checkout/route.js
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/**
- * Checkout (Test Web Shop)
- * - Auth zorunlu
- * - Cabo ref cookie varsa ürün-bazlı indirim uygular
- * - CABO_PRODUCT_CODES_JSON ile (slug veya id) -> productCode eşlemesi
- * - Webhook payload'ında item.productCode gönderilir
- * - HMAC-SHA256(ts + "." + rawBody) ile imzalanır
- */
-
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
@@ -19,202 +7,143 @@ import { verifyAuthToken } from "@/lib/auth";
 import { randomUUID } from "crypto";
 import crypto from "crypto";
 
-const ItemSchema = z.object({
-  productId: z.string(),
-  quantity: z.number().int().min(1).max(999),
-});
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const ItemSchema = z.object({ productId: z.string(), quantity: z.number().int().min(1).max(999) });
 const BodySchema = z.object({ items: z.array(ItemSchema).min(1) });
 
-const CABO_REF_COOKIE = "cabo_ref";
-
-function round2(n) { return Math.round(n * 100) / 100; }
-
-// --- Discount helpers (aynen) ---
-function parseDiscountValue(v) {
-  if (v == null) return null;
-  if (typeof v === "number" && isFinite(v) && v >= 0) return { type: "fixed", value: v };
-  const s = String(v).trim().toUpperCase();
+function parseJSON(str, fallback) { try { return JSON.parse(str || ""); } catch { return fallback; } }
+function applyDiscount(price, spec) {
+  if (!spec) return { price, originalPrice: null };
+  const s = String(spec).trim().toUpperCase();
   if (s.endsWith("%")) {
-    const num = parseFloat(s.slice(0, -1));
-    if (!isNaN(num) && num >= 0 && num <= 100) return { type: "percent", value: num };
+    const pct = Math.max(0, Math.min(100, parseFloat(s.slice(0, -1)) || 0));
+    const dp = +(price * (1 - pct / 100)).toFixed(2);
+    return { price: dp, originalPrice: price };
   }
-  if (s.endsWith("TRY")) {
-    const num = parseFloat(s.replace("TRY", "").trim());
-    if (!isNaN(num) && num >= 0) return { type: "fixed", value: num };
-  }
-  const num = parseFloat(s);
-  if (!isNaN(num) && num >= 0) return { type: "fixed", value: num };
-  return null;
-}
-function loadDiscountTable() {
-  try {
-    const raw = process.env.CABO_DISCOUNTS_JSON || "";
-    if (!raw) return {};
-    const obj = JSON.parse(raw);
-    const table = {};
-    for (const [k, v] of Object.entries(obj)) {
-      const norm = parseDiscountValue(v);
-      if (norm) table[k] = norm;
-    }
-    return table;
-  } catch { return {}; }
-}
-function getPerProductDiscount(product, table) {
-  return table[product.id] || table[product.slug] || null;
+  const fixed = parseFloat(s.replace("TRY", "").replace("TL", "")) || 0;
+  const dp = Math.max(0, +(price - fixed).toFixed(2));
+  return { price: dp, originalPrice: price };
 }
 
-// --- Product code map: (slug veya id) -> productCode ---
-function loadProductCodeMap() {
-  try {
-    const raw = process.env.CABO_PRODUCT_CODES_JSON || "";
-    if (!raw) return {};
-    const obj = JSON.parse(raw);
-    const m = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (typeof v === "string" && v.length >= 8) m[k] = v;
-    }
-    return m;
-  } catch { return {}; }
-}
-function getProductCode(product, map) {
-  return map[product.id] || map[product.slug] || null;
-}
-
-async function getUser() {
+async function getUser(){
   try {
     const token = (await cookies()).get("auth_token")?.value;
-    if (!token) return null;
+    if(!token) return null;
     return await verifyAuthToken(token);
   } catch { return null; }
 }
 
-export async function POST(req) {
-  try {
+export async function POST(req){
+  try{
     const user = await getUser();
-    if (!user) return NextResponse.json({ error: "Auth gerekli." }, { status: 401 });
+    if(!user) return NextResponse.json({ error:"Auth gerekli." }, { status:401 });
 
-    const body = await req.json();
-    const data = BodySchema.parse(body);
-
-    const ids = data.items.map((i) => i.productId);
+    const data = BodySchema.parse(await req.json());
+    const ids = data.items.map(i=>i.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: ids }, isActive: true },
-      select: { id: true, slug: true, name: true, price: true, isActive: true, imageUrl: true },
+      select: { id:true, slug:true, price:true },
     });
-    if (!products.length) return NextResponse.json({ error: "Ürün bulunamadı." }, { status: 400 });
+    if(products.length===0) return NextResponse.json({ error:"Ürün bulunamadı." }, { status:400 });
 
-    const caboRef = (await cookies()).get(CABO_REF_COOKIE)?.value || null;
-    const discountTable = loadDiscountTable();
-    const pcMap = loadProductCodeMap();
+    const caboRef = (await cookies()).get("cabo_ref")?.value || null;
+    const hasRef = !!caboRef;
+    const discountMap = parseJSON(process.env.CABO_DISCOUNTS_JSON, {});
+    const codeMap = parseJSON(process.env.CABO_PRODUCT_CODES_JSON, {});
+    const currency = process.env.SHOP_CURRENCY || "TRY";
 
-    let totalOriginal = 0;
-    let totalDiscount = 0;
-    let totalPayable = 0;
-
+    let total = 0;
     const orderItems = [];
 
-    for (const it of data.items) {
-      const p = products.find((x) => x.id === it.productId);
-      if (!p) continue;
-
-      const baseUnit = p.price;
-      const baseLine = baseUnit * it.quantity;
-      totalOriginal += baseLine;
-
-      let finalUnit = baseUnit;
-      if (caboRef) {
-        const cfg = getPerProductDiscount(p, discountTable);
-        if (cfg) {
-          const unitDisc = cfg.type === "percent"
-            ? round2((baseUnit * cfg.value) / 100)
-            : round2(cfg.value);
-          finalUnit = Math.max(0, round2(baseUnit - unitDisc));
-          totalDiscount += round2((baseUnit - finalUnit) * it.quantity);
-        }
-      }
-
-      totalPayable += round2(finalUnit * it.quantity);
-
-      orderItems.push({
-        productId: p.id,
-        productSlug: p.slug,
-        productCode: getProductCode(p, pcMap), // <-- YENİ
-        quantity: it.quantity,
-        priceAtPurchase: finalUnit,
-      });
+    for(const it of data.items){
+      const p = products.find(x=>x.id===it.productId);
+      if(!p) continue;
+      const unit = hasRef ? applyDiscount(p.price, discountMap[p.slug]).price : p.price;
+      const line = +(unit * it.quantity).toFixed(2);
+      total = +(total + line).toFixed(2);
+      orderItems.push({ productId: p.id, quantity: it.quantity, priceAtPurchase: unit, slug: p.slug, lineTotal: line });
     }
+    if(orderItems.length===0) return NextResponse.json({ error:"Geçersiz sepet." }, { status:400 });
 
-    if (!orderItems.length) return NextResponse.json({ error: "Geçersiz sepet." }, { status: 400 });
+    const orderNumber = "ORD-" + randomUUID().slice(0,8).toUpperCase();
 
-    const orderNumber = "ORD-" + randomUUID().slice(0, 8).toUpperCase();
-
+    // DB kaydı
     const order = await prisma.order.create({
       data: {
         orderNumber,
         userId: user.id,
-        totalAmount: round2(totalPayable),
+        totalAmount: total,
         orderItems: {
           createMany: {
             data: orderItems.map(oi => ({
               productId: oi.productId,
               quantity: oi.quantity,
-              priceAtPurchase: oi.priceAtPurchase, // indirimli birim
+              priceAtPurchase: oi.priceAtPurchase,
             })),
-          },
-        },
+          }
+        }
       },
       include: { orderItems: true },
     });
 
-    // --- Cabo Webhook (HMAC) ---
+    // Cabo webhook (opsiyonel ama tavsiye)
     if (process.env.CABO_WEBHOOK_URL && process.env.CABO_HMAC_SECRET && process.env.CABO_KEY_ID) {
       const payload = {
+        // yeni alan adları
         orderNumber: order.orderNumber,
-        userId: user.id,
-        caboRef: caboRef || null,
-        totalOriginal: round2(totalOriginal),
-        totalDiscount: round2(totalDiscount),
-        totalPaid: round2(totalPayable),
+        caboRef,
+        status: "confirmed",
         items: orderItems.map(oi => ({
-          productId: oi.productId,
-          productSlug: oi.productSlug,
-          productCode: oi.productCode || null, // <-- YENİ: product_code taşınıyor
+          productCode: codeMap[oi.slug] || null,
           quantity: oi.quantity,
-          unitPriceCharged: oi.priceAtPurchase,
-          lineTotal: round2(oi.priceAtPurchase * oi.quantity),
+          lineTotal: oi.lineTotal,
+        })),
+        // geriye uyumluluk için ek alanlar:
+        orderId: order.orderNumber,
+        token: caboRef,
+        products: orderItems.map(oi => ({
+          productCode: codeMap[oi.slug] || null,
+          quantity: oi.quantity,
+          amount: oi.lineTotal,      // eski şema "amount" bekliyorsa
+          currency,
         })),
       };
 
-      try {
+      try{
         const raw = JSON.stringify(payload);
-        const ts = Math.floor(Date.now() / 1000).toString();
-        const sig = crypto
-          .createHmac("sha256", process.env.CABO_HMAC_SECRET)
-          .update(`${ts}.${raw}`)
-          .digest("hex");
+        const ts = Math.floor(Date.now()/1000).toString();
+        const sig = crypto.createHmac("sha256", process.env.CABO_HMAC_SECRET).update(`${ts}.${raw}`).digest("hex");
+        const reqId = randomUUID();
+        const nonce = randomUUID();
 
         await fetch(process.env.CABO_WEBHOOK_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+          method:"POST",
+          headers:{
+            "Content-Type":"application/json",
+
+            // yeni header isimleri (katı sürüm)
+            "X-Key-Id": process.env.CABO_KEY_ID,
+            "X-Timestamp": ts,
+            "X-Signature": sig,
+            "X-Request-Id": reqId,
+            "X-Nonce": nonce,
+
+            // eski header isimleri (geriye uyumluluk)
+            "X-Cabo-Key-Id": process.env.CABO_KEY_ID,
             "X-Cabo-Timestamp": ts,
             "X-Cabo-Signature": sig,
-            "X-Cabo-Key-Id": process.env.CABO_KEY_ID,
-            "Cache-Control": "no-store",
           },
           body: raw,
         }).catch(() => {});
-      } catch { /* webhook hatası siparişi bozmasın */ }
+      }catch{
+        // webhook başarısız olsa bile sipariş oluşturuldu; kullanıcıyı bloke etmeyelim
+      }
     }
 
-    return NextResponse.json({
-      ok: true,
-      orderNumber: order.orderNumber,
-      totalOriginal: round2(totalOriginal),
-      totalDiscount: round2(totalDiscount),
-      totalPaid: round2(totalPayable),
-    });
-  } catch (e) {
-    return NextResponse.json({ error: "İşlem hatası." }, { status: 400 });
+    return NextResponse.json({ ok:true, orderNumber: order.orderNumber });
+  }catch(err){
+    return NextResponse.json({ error:"İşlem hatası." }, { status:400 });
   }
 }

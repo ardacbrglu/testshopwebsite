@@ -2,54 +2,29 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * Cabo Referral Capture
- * - GET /cabo?token=...&target=/products/<slug>
- * - Güvenli şekilde HTTP-Only cookie'ye cabo_ref yazar ve hedefe yönlendirir.
- * Security:
- * - Token whitelist doğrulama (basit regex)
- * - Open-redirect korunumu (target yalnızca site içi path)
- * - Cookie: HttpOnly, Secure, SameSite=Lax, MaxAge: 14 gün
- */
-
 import { NextResponse } from "next/server";
 
-const CABO_REF_COOKIE = "cabo_ref";
-const MAX_AGE_S = 14 * 24 * 60 * 60;
-
-function isValidToken(t) {
-  // Alfanümerik, _ ve -; 8–128 arası (gerekirse esnet)
-  return typeof t === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(t);
-}
-
-function sanitizeTarget(target, req) {
-  try {
-    if (!target || typeof target !== "string") return new URL("/products", req.url);
-    // Sadece site içi path kabul (open redirect engeli)
-    if (target.startsWith("/")) return new URL(target, req.url);
-    return new URL("/products", req.url);
-  } catch {
-    return new URL("/products", req.url);
-  }
-}
-
 export async function GET(req) {
-  const { searchParams } = new URL(req.url);
-  const token = searchParams.get("token");
-  const target = searchParams.get("target");
+  const url = new URL(req.url);
+  const token = (url.searchParams.get("token") || url.searchParams.get("ref") || "").trim();
+  const target = (url.searchParams.get("target") || "/").trim();
 
-  const dest = sanitizeTarget(target, req);
+  const dest = target.startsWith("http")
+    ? target
+    : `${url.origin}${target.startsWith("/") ? "" : "/"}${target}`;
 
-  const res = NextResponse.redirect(dest, { status: 302 });
-  if (isValidToken(token)) {
+  const res = NextResponse.redirect(dest, 302);
+
+  if (token) {
+    // 14 gün geçerli first-party cookie
     res.cookies.set({
-      name: CABO_REF_COOKIE,
+      name: "cabo_ref",
       value: token,
       httpOnly: true,
       secure: true,
       sameSite: "lax",
       path: "/",
-      maxAge: MAX_AGE_S,
+      maxAge: 60 * 60 * 24 * 14,
     });
   }
   return res;
