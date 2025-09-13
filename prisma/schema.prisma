@@ -17,15 +17,18 @@ model User {
 
 model Product {
   id          String      @id @default(cuid())
-  slug        String      @unique @db.VarChar(191)
-  name        String      @db.VarChar(191)
-  description String      @db.Text
-  price       Int
-  imageUrl    String      @db.VarChar(255)
+  name        String
+  slug        String      @unique
+  description String
+  imageUrl    String
+  price       Int         // Kuruş (cent) cinsinden: 1999 => 19,99 ₺
   isActive    Boolean     @default(true)
   createdAt   DateTime    @default(now())
+
+  // İsteğe bağlı: sipariş ilişkileri varsa kalsın
   orderItems  OrderItem[]
 }
+
 
 model Order {
   id          String      @id @default(cuid())
