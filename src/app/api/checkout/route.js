@@ -4,103 +4,107 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 
-// --- ENV
-const CABO_URL   = process.env.CABO_WEBHOOK_URL;
-const KEY_ID     = process.env.CABO_KEY_ID;
-const SECRET     = process.env.CABO_HMAC_SECRET;
+// ---- helpers
+const j = (status, obj) => NextResponse.json(obj, { status });
+const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
+const pctOf = (price, rule) => {
+  const m = rule && String(rule).match(/-?\d+(\.\d+)?/);
+  if (!m) return { unit: price, pct: null };
+  const pct = parseFloat(m[0]);
+  if (!Number.isFinite(pct)) return { unit: price, pct: null };
+  const unit = +(price * (1 - Math.max(0, Math.min(100, pct)) / 100)).toFixed(2);
+  return { unit, pct };
+};
 
-// JSON env yükle
-function readJsonEnv(name, fallback = "{}") {
-  try { return JSON.parse(process.env[name] || fallback); }
-  catch { return JSON.parse(fallback); }
+function pickCode(codes, p) {
+  const shortKey = p.slug?.startsWith("product-") ? p.slug.slice(8) : p.slug?.split("-").pop();
+  return codes[p.slug] ?? codes[shortKey] ?? codes[p.id] ?? null;
 }
-const CODE_MAP   = readJsonEnv("CABO_PRODUCT_CODES_JSON", "{}"); // slug/id -> productCode
-
-function bad(status, msg, extra) {
-  return NextResponse.json({ ok:false, error: msg, ...(extra||{}) }, { status });
-}
-function ok(data) {
-  return NextResponse.json({ ok:true, ...(data||{}) }, { status: 200 });
-}
-function hmac(secret, tsSec, raw) {
-  return crypto.createHmac("sha256", secret).update(`${tsSec}.${raw}`).digest("hex");
+function pickRule(discounts, p) {
+  const shortKey = p.slug?.startsWith("product-") ? p.slug.slice(8) : p.slug?.split("-").pop();
+  return discounts[p.slug] ?? discounts[shortKey] ?? discounts[p.id] ?? null;
 }
 
 export async function POST(req) {
-  try {
-    if (!CABO_URL || !KEY_ID || !SECRET) {
-      return bad(500, "server_misconfigured");
-    }
+  let body;
+  try { body = await req.json(); } catch { return j(400, { error: "bad_json" }); }
 
-    const inp = await req.json().catch(() => ({}));
-    const itemsIn = Array.isArray(inp?.items) ? inp.items : [];
-    const caboRef = inp?.caboRef || null;
-    if (!itemsIn.length) return bad(400, "no_items");
+  const items = Array.isArray(body?.items) ? body.items : [];
+  const caboRef = body?.caboRef || null;
+  if (!items.length) return j(400, { error: "empty_cart" });
 
-    // Satırları normalize et (productCode ekle, sayısal tipleri düzelt)
-    const normItems = itemsIn.map((it) => {
-      const slugOrId = it.productSlug || it.productId;
-      const productCode =
-        CODE_MAP[slugOrId] || CODE_MAP[it.productSlug] || CODE_MAP[it.productId] || null;
+  // env
+  let discounts = {};
+  let codes = {};
+  try { discounts = JSON.parse(process.env.CABO_DISCOUNTS_JSON || "{}"); } catch {}
+  try { codes = JSON.parse(process.env.CABO_PRODUCT_CODES_JSON || "{}"); } catch {}
 
-      const quantity = Number(it.quantity || 1);
-      const unitPriceCharged = Number(it.unitPriceCharged ?? 0);
-      const lineTotal = Number(
-        it.lineTotal != null ? it.lineTotal : unitPriceCharged * quantity
-      );
+  // ürünleri çek
+  const ids = [...new Set(items.map((i) => i.productId))].join(",");
+  const origin = new URL(req.url).origin;
+  const products = await fetch(`${origin}/api/products?ids=${encodeURIComponent(ids)}`, { cache: "no-store" })
+    .then((r) => r.json())
+    .catch(() => []);
 
-      return {
-        productCode,
-        productId: it.productId ?? undefined,
-        productSlug: it.productSlug ?? undefined,
-        quantity,
-        unitPriceCharged,
-        lineTotal
-      };
+  const map = new Map((Array.isArray(products) ? products : []).map((p) => [p.id, p]));
+
+  // satırlar
+  const outItems = [];
+  for (const it of items) {
+    const p = map.get(it.productId);
+    if (!p) return j(400, { error: `product_not_found_${it.productId}` });
+
+    const price = n(p.price);
+    if (!Number.isFinite(price)) return j(400, { error: `bad_price_${p.id}` });
+
+    const rule = pickRule(discounts, p);              // sadece yüzde (TRY türünü yok sayar)
+    const { unit } = pctOf(price, rule);
+    const quantity = Math.max(1, Number(it.quantity || 1));
+    const lineTotal = +(unit * quantity).toFixed(2);
+
+    const productCode = pickCode(codes, p);
+    if (!productCode) return j(400, { error: `missing_product_code_${p.slug || p.id}` });
+
+    outItems.push({
+      productCode,
+      productId: String(p.id),
+      productSlug: p.slug,
+      quantity,
+      unitPriceCharged: unit,
+      lineTotal,
     });
-
-    // Cabo tarafında REQUIRE_PRODUCT_CODE=1 olduğundan productCode zorunlu
-    const missing = normItems.filter(x => !x.productCode).map(x => x.productSlug || x.productId);
-    if (missing.length) return bad(400, "missing_product_code", { missing });
-
-    // Sipariş no (idempotency için aynı değeri header’da da kullanırız)
-    const orderNumber = inp?.orderNumber || `TS${Date.now()}`;
-
-    const outbound = {
-      orderNumber,
-      caboRef: caboRef || undefined,
-      items: normItems
-    };
-
-    const raw = JSON.stringify(outbound);
-    const ts  = Math.floor(Date.now()/1000);
-    const sig = hmac(SECRET, ts, raw);
-
-    const resp = await fetch(CABO_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Cabo-Key-Id": KEY_ID,
-        "X-Cabo-Timestamp": String(ts),
-        "X-Cabo-Signature": sig,
-        "X-Request-Id": orderNumber
-      },
-      body: raw
-    });
-
-    const cabo = await resp.json().catch(()=> ({}));
-    if (!resp.ok || cabo?.ok === false) {
-      return bad(502, cabo?.error || "cabo_failed", { cabo });
-    }
-
-    return ok({ orderNumber, cabo });
-  } catch (e) {
-    console.error("[checkout] error:", e);
-    return bad(500, "server_error");
   }
-}
 
-// Opsiyonel health
-export async function GET() {
-  return ok({ healthy: true });
+  // payload & imza
+  const payload = {
+    orderNumber: `TS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    caboRef,
+    items: outItems,
+  };
+  const raw = JSON.stringify(payload);
+  const ts = Math.floor(Date.now() / 1000);
+  const secret = process.env.CABO_HMAC_SECRET || "";
+  const keyId = process.env.CABO_KEY_ID || "";
+  const url = process.env.CABO_WEBHOOK_URL || "";
+
+  if (!secret || !keyId || !url) return j(500, { error: "misconfigured_env" });
+
+  const sig = crypto.createHmac("sha256", secret).update(`${ts}.${raw}`).digest("hex");
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cabo-Key-Id": keyId,
+      "X-Cabo-Timestamp": String(ts),
+      "X-Cabo-Signature": sig,
+    },
+    body: raw,
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    return j(502, { error: "cabo_webhook_failed", status: resp.status, detail: text?.slice(0, 300) });
+  }
+  return j(200, { ok: true, orderNumber: payload.orderNumber });
 }
