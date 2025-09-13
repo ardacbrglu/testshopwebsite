@@ -8,11 +8,18 @@ type Product = {
   slug: string; name: string; image: string; unitFinal: number;
   unitOriginal: number; discountLabel: string | null; currency: string;
 };
-type CheckoutResponse = {
-  ok: boolean;
+
+type CheckoutSuccess = {
+  ok: true;
   orderNumber: string;
   summary: { total: number; itemCount: number };
 };
+type CheckoutError = { ok: false; error?: string };
+type CheckoutResponse = CheckoutSuccess | CheckoutError;
+
+function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess {
+  return Boolean(d && (d as CheckoutSuccess).ok === true);
+}
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
@@ -44,7 +51,9 @@ export default function CartPage() {
         const line = Math.round(p.unitFinal * ci.quantity * 100) / 100;
         return { ...ci, product: p, line };
       })
-      .filter((x): x is { slug: string; quantity: number; product: Product; line: number } => Boolean(x));
+      .filter(
+        (x): x is { slug: string; quantity: number; product: Product; line: number } => Boolean(x)
+      );
   }, [cart, catalog]);
 
   const total = rows.reduce((s, r) => s + r.line, 0);
@@ -73,7 +82,14 @@ export default function CartPage() {
         body: JSON.stringify({ items: cart }),
       });
       const data = (await res.json()) as CheckoutResponse;
-      if (!res.ok || !data?.ok) throw new Error((data as any)?.error || "checkout_failed");
+
+      // 1) HTTP hatası
+      if (!res.ok) throw new Error(`http_${res.status}`);
+
+      // 2) JSON "ok:false" ise daraltma CheckoutError olur
+      if (!isCheckoutSuccess(data)) {
+        throw new Error(data.error ?? "checkout_failed");
+      }
 
       // basit sipariş geçmişi
       type StoredOrder = { id: string; total: number; at: string };
@@ -105,7 +121,7 @@ export default function CartPage() {
           <div className="space-y-4">
             {rows.map((r) => (
               <div key={r.slug} className="flex items-center gap-4 rounded-xl border border-white/10 p-3">
-                {/* uyarı: <Image /> önerilir — şu an bilinçli olarak img */}
+                {/* Uyarı: performans için ileride next/image'a geçebiliriz */}
                 <img src={r.product.image} alt={r.product.name} className="w-20 h-20 object-cover rounded-lg" />
                 <div className="flex-1">
                   <div className="font-medium">{r.product.name}</div>
