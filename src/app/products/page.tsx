@@ -17,6 +17,8 @@ type Product = {
   currency: string;
 };
 
+type StoredCartItem = { slug: string; quantity: number };
+
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
@@ -28,14 +30,14 @@ export default function ProductsPage() {
 
   useEffect(() => {
     fetch("/api/products", { cache: "no-store" })
-      .then(r => r.json())
-      .then(d => setItems(d.data || []));
+      .then((r) => r.json())
+      .then((d) => setItems((d?.data ?? []) as Product[]));
   }, []);
 
   const addToCart = (p: Product) => {
     const q = Math.max(1, Math.floor(qty[p.slug] || 1));
-    const cart = JSON.parse(localStorage.getItem("cart") || "[]");
-    const idx = cart.findIndex((c: any) => c.slug === p.slug);
+    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]") as StoredCartItem[];
+    const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
     else cart.push({ slug: p.slug, quantity: q });
     localStorage.setItem("cart", JSON.stringify(cart));
@@ -54,9 +56,10 @@ export default function ProductsPage() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {items.map(p => (
+        {items.map((p) => (
           <div key={p.slug} className="rounded-2xl border border-white/10 bg-black/30 p-4 shadow hover:shadow-lg transition">
             <Link href={`/products/${p.slug}`}>
+              {/* uyarı: <Image /> önerilir — şu an bilinçli olarak img */}
               <img src={p.image} alt={p.name} className="w-full h-48 object-cover rounded-xl mb-3" />
             </Link>
             <div className="font-semibold">{p.name}</div>
@@ -80,7 +83,7 @@ export default function ProductsPage() {
                 min={1}
                 className="w-20 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                 value={qty[p.slug] || 1}
-                onChange={e => setQty(s => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))}
+                onChange={(e) => setQty((s) => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))}
               />
               <button onClick={() => addToCart(p)} className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10">
                 Sepete Ekle

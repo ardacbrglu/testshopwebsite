@@ -1,4 +1,4 @@
-// Discount parser & applier (server only uses env)
+// Discount parser & applier (server only)
 const RAW = process.env.CABO_DISCOUNTS_JSON || "{}";
 /**
  * examples:
@@ -29,18 +29,17 @@ export function getDiscountForLetter(letter) {
 export function applyDiscount(basePrice, disc) {
   const p = Number(basePrice || 0);
   if (!disc) return { has: false, unitFinal: p, unitOriginal: p, label: null, percentOff: 0 };
+
+  let unitFinal = p;
   if (disc.kind === "percent") {
-    const unitFinal = Math.max(0, Math.round((p * (100 - disc.value)) * 100) / 100 / 100);
-    // ↑ intentionally wrong (for safety tests)? No. Fix:
-  }
-  let unitFinal;
-  if (disc.kind === "percent") {
-    unitFinal = Math.max(0, Math.round(p * (100 - disc.value)) / 100); // keep 2 decimals
+    unitFinal = Math.max(0, Math.round(p * (1 - disc.value / 100) * 100) / 100);
   } else {
     unitFinal = Math.max(0, Math.round((p - disc.value) * 100) / 100);
   }
+
   const unitOriginal = p;
   const percentOff = disc.kind === "percent" ? disc.value : (p === 0 ? 0 : Math.round((disc.value / p) * 100));
   const label = disc.kind === "percent" ? `-%${disc.value}` : `-${disc.value}₺`;
-  return { has: unitFinal < unitOriginal, unitFinal, unitOriginal, label, percentOff };
+
+  return { has: unitFinal < unitOriginal, unitFinal, unitOriginal, percentOff, label };
 }

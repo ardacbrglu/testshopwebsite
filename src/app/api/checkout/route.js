@@ -7,7 +7,6 @@ import { getBySlug, getProductCode } from "@/lib/db";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// ---- ENV
 const CABO_WEBHOOK_URL = process.env.CABO_WEBHOOK_URL;
 const KEY_ID = process.env.CABO_KEY_ID || "";
 const HMAC_SECRET = process.env.CABO_HMAC_SECRET || "";
@@ -23,7 +22,6 @@ export async function POST(req) {
     const items = Array.isArray(body?.items) ? body.items : [];
     if (!items.length) return NextResponse.json({ ok: false, error: "empty_cart" }, { status: 400 });
 
-    // Normalize from client: [{slug, quantity}]
     const normalized = items.map((it) => {
       const p = getBySlug(it.slug);
       const qty = Math.max(1, Math.floor(it.quantity || 1));
@@ -41,14 +39,10 @@ export async function POST(req) {
       };
     }).filter(Boolean);
 
-    // Only contracted → will be sent to Cabo
     const contractedItems = normalized.filter((n) => n.contracted && (!REQUIRE_PRODUCT_CODE || n.productCode));
 
-    // Order summary for UI
     const orderTotal = normalized.reduce((s, n) => s + n.lineTotal, 0);
     const orderNumber = uid("ORD");
-
-    // Prepare webhook payload (new format)
     const caboRef = cookies().get("caboRef")?.value || null;
     let caboResponse = null;
 
@@ -98,7 +92,7 @@ export async function POST(req) {
       },
       cabo: caboResponse || { skipped: true, reason: "no_contracted_items_or_missing_env" },
     }, { headers: { "Cache-Control": "no-store" } });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
