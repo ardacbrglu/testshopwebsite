@@ -34,6 +34,6 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     "src/**/*"
-, "prisma/seed.js"  ],
+, "prisma/seed.js", "middleware.js"  ],
   "exclude": ["node_modules", ".next", "out"]
 }

@@ -13,7 +13,14 @@ export const dynamic = "force-dynamic";
 const ItemSchema = z.object({ productId: z.string(), quantity: z.number().int().min(1).max(999) });
 const BodySchema = z.object({ items: z.array(ItemSchema).min(1) });
 
-function parseJSON(str, fallback) { try { return JSON.parse(str || ""); } catch { return fallback; } }
+function parseJSON(s, fb) { try { return JSON.parse(s || ""); } catch { return fb; } }
+function shortKey(slug = "") {
+  return slug.replace(/^product-/, "").replace(/^urun-/, "").replace(/^item-/, "");
+}
+function pick(map, keys = []) {
+  for (const k of keys) if (k && Object.prototype.hasOwnProperty.call(map, k)) return map[k];
+  return undefined;
+}
 function applyDiscount(price, spec) {
   if (!spec) return { price, originalPrice: null };
   const s = String(spec).trim().toUpperCase();
@@ -28,11 +35,11 @@ function applyDiscount(price, spec) {
 }
 
 async function getUser(){
-  try {
+  try{
     const token = (await cookies()).get("auth_token")?.value;
     if(!token) return null;
     return await verifyAuthToken(token);
-  } catch { return null; }
+  }catch{ return null; }
 }
 
 export async function POST(req){
@@ -42,6 +49,7 @@ export async function POST(req){
 
     const data = BodySchema.parse(await req.json());
     const ids = data.items.map(i=>i.productId);
+
     const products = await prisma.product.findMany({
       where: { id: { in: ids }, isActive: true },
       select: { id:true, slug:true, price:true },
@@ -50,26 +58,26 @@ export async function POST(req){
 
     const caboRef = (await cookies()).get("cabo_ref")?.value || null;
     const hasRef = !!caboRef;
-    const discountMap = parseJSON(process.env.CABO_DISCOUNTS_JSON, {});
+    const discMap = parseJSON(process.env.CABO_DISCOUNTS_JSON, {});
     const codeMap = parseJSON(process.env.CABO_PRODUCT_CODES_JSON, {});
     const currency = process.env.SHOP_CURRENCY || "TRY";
 
     let total = 0;
     const orderItems = [];
 
-    for(const it of data.items){
-      const p = products.find(x=>x.id===it.productId);
-      if(!p) continue;
-      const unit = hasRef ? applyDiscount(p.price, discountMap[p.slug]).price : p.price;
+    for (const it of data.items) {
+      const p = products.find(x => x.id === it.productId);
+      if (!p) continue;
+      const spec = pick(discMap, [p.slug, shortKey(p.slug), p.id]);
+      const { price: unit } = hasRef ? applyDiscount(p.price, spec) : { price: p.price, originalPrice: null };
       const line = +(unit * it.quantity).toFixed(2);
       total = +(total + line).toFixed(2);
-      orderItems.push({ productId: p.id, quantity: it.quantity, priceAtPurchase: unit, slug: p.slug, lineTotal: line });
+      orderItems.push({ productId: p.id, slug: p.slug, quantity: it.quantity, priceAtPurchase: unit, lineTotal: line });
     }
     if(orderItems.length===0) return NextResponse.json({ error:"Geçersiz sepet." }, { status:400 });
 
     const orderNumber = "ORD-" + randomUUID().slice(0,8).toUpperCase();
 
-    // DB kaydı
     const order = await prisma.order.create({
       data: {
         orderNumber,
@@ -88,25 +96,24 @@ export async function POST(req){
       include: { orderItems: true },
     });
 
-    // Cabo webhook (opsiyonel ama tavsiye)
+    // Cabo webhook (HMAC)
     if (process.env.CABO_WEBHOOK_URL && process.env.CABO_HMAC_SECRET && process.env.CABO_KEY_ID) {
       const payload = {
-        // yeni alan adları
         orderNumber: order.orderNumber,
         caboRef,
         status: "confirmed",
         items: orderItems.map(oi => ({
-          productCode: codeMap[oi.slug] || null,
+          productCode: pick(codeMap, [oi.slug, shortKey(oi.slug), oi.productId]) || null,
           quantity: oi.quantity,
           lineTotal: oi.lineTotal,
         })),
-        // geriye uyumluluk için ek alanlar:
+        // geri uyum için:
         orderId: order.orderNumber,
         token: caboRef,
         products: orderItems.map(oi => ({
-          productCode: codeMap[oi.slug] || null,
+          productCode: pick(codeMap, [oi.slug, shortKey(oi.slug), oi.productId]) || null,
           quantity: oi.quantity,
-          amount: oi.lineTotal,      // eski şema "amount" bekliyorsa
+          amount: oi.lineTotal,
           currency,
         })),
       };
@@ -119,27 +126,23 @@ export async function POST(req){
         const nonce = randomUUID();
 
         await fetch(process.env.CABO_WEBHOOK_URL, {
-          method:"POST",
-          headers:{
-            "Content-Type":"application/json",
-
-            // yeni header isimleri (katı sürüm)
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // yeni
             "X-Key-Id": process.env.CABO_KEY_ID,
             "X-Timestamp": ts,
             "X-Signature": sig,
             "X-Request-Id": reqId,
             "X-Nonce": nonce,
-
-            // eski header isimleri (geriye uyumluluk)
+            // eski
             "X-Cabo-Key-Id": process.env.CABO_KEY_ID,
             "X-Cabo-Timestamp": ts,
             "X-Cabo-Signature": sig,
           },
           body: raw,
-        }).catch(() => {});
-      }catch{
-        // webhook başarısız olsa bile sipariş oluşturuldu; kullanıcıyı bloke etmeyelim
-      }
+        }).catch(()=>{});
+      }catch{}
     }
 
     return NextResponse.json({ ok:true, orderNumber: order.orderNumber });

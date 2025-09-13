@@ -14,9 +14,7 @@ export async function GET(req) {
     : `${url.origin}${target.startsWith("/") ? "" : "/"}${target}`;
 
   const res = NextResponse.redirect(dest, 302);
-
   if (token) {
-    // 14 gün geçerli first-party cookie
     res.cookies.set({
       name: "cabo_ref",
       value: token,
