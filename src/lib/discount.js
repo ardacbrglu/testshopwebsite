@@ -1,17 +1,46 @@
-// Yüzdesel indirim helper'ı (tek kaynak)
-// "10%", "10", "50TRY", "50 tl" → sayısal kısmı yüzde kabul edilir.
-// Hatalı/negatif/>100 ise indirim uygulanmaz.
-export function parsePercent(rule) {
-  if (!rule) return null;
-  const m = String(rule).match(/-?\d+(\.\d+)?/);
-  if (!m) return null;
-  const pct = Math.max(0, Math.min(100, parseFloat(m[0])));
-  return Number.isFinite(pct) ? pct : null;
+// Discount parser & applier (server only uses env)
+const RAW = process.env.CABO_DISCOUNTS_JSON || "{}";
+/**
+ * examples:
+ * {"a":"10%","b":"50TRY","d":"5%"}
+ */
+let MAP = {};
+try { MAP = JSON.parse(RAW); } catch { MAP = {}; }
+
+function parseDiscount(str) {
+  if (!str || typeof str !== "string") return null;
+  const s = str.trim().toUpperCase();
+  if (s.endsWith("%")) {
+    const v = Number(s.slice(0, -1));
+    if (Number.isFinite(v) && v > 0) return { kind: "percent", value: v };
+  }
+  if (s.endsWith("TRY")) {
+    const v = Number(s.slice(0, -3));
+    if (Number.isFinite(v) && v > 0) return { kind: "amount", value: v };
+  }
+  return null;
 }
 
-export function applyPercentDiscount(price, rule) {
-  const pct = parsePercent(rule);
-  if (pct == null) return { price, pct: null };
-  const newPrice = +(price * (1 - pct / 100)).toFixed(2);
-  return { price: newPrice, pct };
+export function getDiscountForLetter(letter) {
+  const d = MAP[String(letter || "").toLowerCase()];
+  return parseDiscount(d);
+}
+
+export function applyDiscount(basePrice, disc) {
+  const p = Number(basePrice || 0);
+  if (!disc) return { has: false, unitFinal: p, unitOriginal: p, label: null, percentOff: 0 };
+  if (disc.kind === "percent") {
+    const unitFinal = Math.max(0, Math.round((p * (100 - disc.value)) * 100) / 100 / 100);
+    // ↑ intentionally wrong (for safety tests)? No. Fix:
+  }
+  let unitFinal;
+  if (disc.kind === "percent") {
+    unitFinal = Math.max(0, Math.round(p * (100 - disc.value)) / 100); // keep 2 decimals
+  } else {
+    unitFinal = Math.max(0, Math.round((p - disc.value) * 100) / 100);
+  }
+  const unitOriginal = p;
+  const percentOff = disc.kind === "percent" ? disc.value : (p === 0 ? 0 : Math.round((disc.value / p) * 100));
+  const label = disc.kind === "percent" ? `-%${disc.value}` : `-${disc.value}₺`;
+  return { has: unitFinal < unitOriginal, unitFinal, unitOriginal, label, percentOff };
 }

@@ -1,19 +1,36 @@
 "use client";
+
 import { useEffect, useRef, useState } from "react";
-import { toCurrencyTRY } from "@/lib/format";
 import { useSearchParams } from "next/navigation";
+// lib/format içindeki money fonksiyonunu toCurrencyTRY adıyla aliase ediyoruz
+import { money as toCurrencyTRY } from "@/lib/format";
 import { emitToast } from "@/components/ToastBus";
 
 type Item = { id: string; name: string; quantity: number; priceAtPurchase: number };
 type Order = { id: string; orderNumber: string; totalAmount: number; createdAt: string; items: Item[] };
 
-export default function OrdersClient({ orders }: { orders: Order[] }) {
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  const sp = useSearchParams();
-  const handledRef = useRef(false); // <- Strict Mode koruması
+type Props = { orders?: Order[] };
 
+export default function OrdersClient({ orders: ordersProp }: Props) {
+  const [orders, setOrders] = useState<Order[]>(ordersProp ?? []);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const handledRef = useRef(false); // StrictMode'da çifte çalışmayı engeller
+  const sp = useSearchParams();
+
+  // İlk render'da prop yoksa localStorage'dan yükle
   useEffect(() => {
-    // aynı render fazında iki kez çalışmayı engelle
+    if (!ordersProp) {
+      try {
+        const raw = localStorage.getItem("orders");
+        if (raw) setOrders(JSON.parse(raw));
+      } catch {
+        setOrders([]);
+      }
+    }
+  }, [ordersProp]);
+
+  // /orders?ok=1&ord=XYZ → toast + param silme
+  useEffect(() => {
     if (handledRef.current) return;
 
     const ok = sp.get("ok");
@@ -21,14 +38,19 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
     if (ok === "1") {
       handledRef.current = true;
 
-      emitToast({
-        type: "success",
-        title: "Satın alma tamamlandı",
-        desc: ord ? `Sipariş ${ord} oluşturuldu.` : undefined,
-        duration: 4000,
-      });
+      try {
+        emitToast?.({
+          type: "success",
+          title: "Satın alma tamamlandı",
+          desc: ord ? `Sipariş ${ord} oluşturuldu.` : undefined,
+          duration: 4000,
+        });
+      } catch {
+        // ToastBus yoksa sessiz geç
+        console.info("Satın alma tamamlandı", ord ? `Sipariş ${ord}` : "");
+      }
 
-      // Query paramlarını sessizce kaldır (yeniden yönlendirme yok)
+      // Parametreleri temizle (yeniden yönlendirme yok)
       const url = new URL(window.location.href);
       url.searchParams.delete("ok");
       url.searchParams.delete("ord");
@@ -49,7 +71,7 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
           return (
             <div key={o.id} className="rounded-2xl border border-neutral-800 bg-neutral-900/60">
               <button
-                className="w-full px-4 py-3"
+                className="w-full px-4 py-3 text-left"
                 onClick={() => setOpen((s) => ({ ...s, [o.id]: !s[o.id] }))}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
