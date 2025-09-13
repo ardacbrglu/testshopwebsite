@@ -1,0 +1,16 @@
+*[33m-[m[33m.[m   [33m7330a6e[m[33m ([m[1;35mrefs/stash[m[33m)[m On main: tmp: before merging feat/cabo-integration into main
+[31m|[m[32m\[m [33m\[m  
+[31m|[m [32m|[m * [33mbf6074b[m untracked files on main: c3d918d merge: cabo integration to main
+[31m|[m * [33md5e81d4[m index on main: c3d918d merge: cabo integration to main
+[31m|[m[31m/[m  
+*   [33mc3d918d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m merge: cabo integration to main
+[34m|[m[35m\[m  
+[34m|[m * [33m2c642bc[m[33m ([m[1;31morigin/feat/cabo-integration[m[33m, [m[1;32mfeat/cabo-integration[m[33m)[m changes
+[34m|[m * [33m7f84069[m asd
+[34m|[m * [33mecca876[m a
+[34m|[m[34m/[m  
+* [33m097a2a0[m fixes
+* [33m82f2c70[m general changes
+* [33m7b04bee[m deploy: products/cart/checkout/orders + seed
+* [33md01d654[m deploy: products/cart/checkout/orders + seed
+* [33mdc1637b[m init: nextjs + prisma mysql + seed
