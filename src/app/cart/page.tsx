@@ -9,10 +9,20 @@ type Product = {
   unitOriginal: number; discountLabel: string | null; currency: string;
 };
 
+type OrderItemForLS = { id: string; name: string; quantity: number; priceAtPurchase: number };
+type OrderForLS = {
+  id: string;
+  orderNumber: string;
+  totalAmount: number;
+  createdAt: string;
+  items: OrderItemForLS[];
+};
+
 type CheckoutSuccess = {
   ok: true;
   orderNumber: string;
   summary: { total: number; itemCount: number };
+  order?: OrderForLS; // [CABO-INTEGRATION] API artık detay döndürüyor
 };
 type CheckoutError = { ok: false; error?: string };
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
@@ -83,18 +93,27 @@ export default function CartPage() {
       });
       const data = (await res.json()) as CheckoutResponse;
 
-      // 1) HTTP hatası
       if (!res.ok) throw new Error(`http_${res.status}`);
+      if (!isCheckoutSuccess(data)) throw new Error(data.error ?? "checkout_failed");
 
-      // 2) JSON "ok:false" ise daraltma CheckoutError olur
-      if (!isCheckoutSuccess(data)) {
-        throw new Error(data.error ?? "checkout_failed");
-      }
+      // [CABO-INTEGRATION] Orders sayfasının beklediği detaylı kayıt formatı
+      const order: OrderForLS =
+        data.order ??
+        ({
+          id: data.orderNumber,
+          orderNumber: data.orderNumber,
+          createdAt: new Date().toISOString(),
+          totalAmount: data.summary.total,
+          items: rows.map((r) => ({
+            id: r.slug,
+            name: r.product.name,
+            quantity: r.quantity,
+            priceAtPurchase: r.product.unitFinal,
+          })),
+        } as OrderForLS);
 
-      // basit sipariş geçmişi
-      type StoredOrder = { id: string; total: number; at: string };
-      const orders: StoredOrder[] = JSON.parse(localStorage.getItem("orders") || "[]") as StoredOrder[];
-      orders.unshift({ id: data.orderNumber, total: data.summary.total, at: new Date().toISOString() });
+      const orders: OrderForLS[] = JSON.parse(localStorage.getItem("orders") || "[]") as OrderForLS[];
+      orders.unshift(order);
       localStorage.setItem("orders", JSON.stringify(orders));
 
       setMsg("Satın alma başarılı");
@@ -121,7 +140,6 @@ export default function CartPage() {
           <div className="space-y-4">
             {rows.map((r) => (
               <div key={r.slug} className="flex items-center gap-4 rounded-xl border border-white/10 p-3">
-                {/* Uyarı: performans için ileride next/image'a geçebiliriz */}
                 <img src={r.product.image} alt={r.product.name} className="w-20 h-20 object-cover rounded-lg" />
                 <div className="flex-1">
                   <div className="font-medium">{r.product.name}</div>

@@ -8,6 +8,32 @@ try { PRODUCT_CODES = JSON.parse(PRODUCT_CODES_RAW); } catch { PRODUCT_CODES = {
 
 export const CURRENCY = process.env.SHOP_CURRENCY || "TRY";
 
+/**
+ * Tek hesaplama noktası: applyDiscounts=true ise merchant indirimi uygulanır.
+ * [CABO-INTEGRATION] applyDiscounts: sadece cabo_ref varsa true yapılacak.
+ */
+export function priceViewFor(p, { applyDiscounts = false } = {}) {
+  const disc = getDiscountForLetter(p.id);
+  const priced = applyDiscounts && disc ? applyDiscount(p.price, disc) : {
+    has: false,
+    unitFinal: p.price,
+    unitOriginal: p.price,
+    percentOff: 0,
+    label: null
+  };
+  return {
+    ...p,
+    currency: CURRENCY,
+    discount: disc && applyDiscounts ? { ...disc } : null,
+    unitOriginal: priced.unitOriginal,
+    unitFinal: priced.unitFinal,
+    percentOff: priced.percentOff,
+    discountLabel: priced.has ? priced.label : null,
+    productCode: PRODUCT_CODES[p.id] || null,
+    contracted: Boolean(PRODUCT_CODES[p.id]),
+  };
+}
+
 // Catalog: letter (a..f) maps → product slug
 export const PRODUCTS = [
   {
@@ -23,7 +49,7 @@ export const PRODUCTS = [
     slug: "product-b",
     name: "Product B",
     description: "Dayanıklı ve şık demo ürün.",
-    price: 49999.99,
+    price: 4999.99,
     image: "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?q=80&w=1200&auto=format&fit=crop",
   },
   {
@@ -39,7 +65,7 @@ export const PRODUCTS = [
     slug: "product-d",
     name: "Product D",
     description: "Pratik, taşınabilir demo ürün.",
-    price: 25000.0,
+    price: 2500.0,
     image: "https://images.unsplash.com/photo-1511385348-a52b4a160dc2?q=80&w=1200&auto=format&fit=crop",
   },
   {
@@ -55,37 +81,23 @@ export const PRODUCTS = [
     slug: "product-f",
     name: "Product F",
     description: "Uzun ömürlü, hesaplı çözüm.",
-    price: 100000.0,
+    price: 1000.0,
     image: "https://images.unsplash.com/photo-1518770660439-4636190af475?q=80&w=1200&auto=format&fit=crop",
   },
 ];
 
-export function listProductsWithPricing() {
-  return PRODUCTS.map((p) => {
-    const disc = getDiscountForLetter(p.id);
-    const priced = applyDiscount(p.price, disc);
-    return {
-      ...p,
-      currency: CURRENCY,
-      discount: disc ? { ...disc } : null,
-      unitOriginal: priced.unitOriginal,
-      unitFinal: priced.unitFinal,
-      percentOff: priced.percentOff,
-      discountLabel: priced.has ? priced.label : null,
-      productCode: PRODUCT_CODES[p.id] || null,
-      contracted: Boolean(PRODUCT_CODES[p.id]),
-    };
-  });
+export function listProductsWithPricing(opts = {}) {
+  return PRODUCTS.map((p) => priceViewFor(p, opts));
 }
 
-export function getBySlug(slug) {
-  const all = listProductsWithPricing();
-  return all.find((p) => p.slug === slug) || null;
+export function getBySlug(slug, opts = {}) {
+  const p = PRODUCTS.find((x) => x.slug === slug);
+  return p ? priceViewFor(p, opts) : null;
 }
 
-export function getByLetter(letter) {
-  const all = listProductsWithPricing();
-  return all.find((p) => p.id === letter) || null;
+export function getByLetter(letter, opts = {}) {
+  const p = PRODUCTS.find((x) => x.id === letter);
+  return p ? priceViewFor(p, opts) : null;
 }
 
 export function getProductCode(letter) {
