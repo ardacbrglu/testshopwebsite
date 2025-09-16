@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 type FeatureProps = { title: string; desc: string };
@@ -25,18 +27,25 @@ export default function HomePage() {
             Simulator
           </span>
         </h1>
+
         <p className="mt-4 text-neutral-300 text-base sm:text-lg">
           Ürünleri sepete ekle ve “satın al” simülasyonunu çalıştır. Siparişlerin
           “Satın Alımlarım” sayfasında listelensin. Cabo entegrasyonuna hazır.
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <a href="/products" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition">
+          <Link
+            href="/products"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition"
+          >
             Ürünlere Git
-          </a>
-          <a href="/cart" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition">
+          </Link>
+          <Link
+            href="/cart"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition"
+          >
             Sepetime Bak
-          </a>
+          </Link>
         </div>
 
         <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-3">
