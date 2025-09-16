@@ -1,7 +1,4 @@
-import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth-server";
-
-export const dynamic = "force-dynamic"; // cookies bazlı kontrol için
+export const dynamic = "force-dynamic";
 
 type FeatureProps = { title: string; desc: string };
 function Feature({ title, desc }: FeatureProps) {
@@ -13,10 +10,7 @@ function Feature({ title, desc }: FeatureProps) {
   );
 }
 
-export default async function HomePage() {
-  const user = await getCurrentUser();
-  if (user) redirect("/products"); // <<< login’li kullanıcı anasayfa görmez
-
+export default function HomePage() {
   return (
     <div className="min-h-[70vh] grid place-items-center">
       <section className="text-center max-w-3xl px-4">
@@ -32,23 +26,23 @@ export default async function HomePage() {
           </span>
         </h1>
         <p className="mt-4 text-neutral-300 text-base sm:text-lg">
-          Kayıt ol, giriş yap, ürünleri sepete ekle ve tek tıkla “satın al” simülasyonunu çalıştır.
-          Siparişlerin “Satın Alımlarım” sayfasında listelensin. Cabo entegrasyonuna hazır.
+          Ürünleri sepete ekle ve “satın al” simülasyonunu çalıştır. Siparişlerin
+          “Satın Alımlarım” sayfasında listelensin. Cabo entegrasyonuna hazır.
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <a href="/register" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition">
-            Hemen Kayıt Ol
+          <a href="/products" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition">
+            Ürünlere Git
           </a>
-          <a href="/login" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition">
-            Giriş Yap
+          <a href="/cart" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition">
+            Sepetime Bak
           </a>
         </div>
 
         <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Feature title="Basit Akış" desc="Ürün → Sepet → Satın Al → Sipariş Geçmişi" />
           <Feature title="Gerçek Ödeme Yok" desc="Tamamen demo amaçlı" />
-          <Feature title="Cabo Hazır" desc="HMAC webhook entegrasyonu için altyapı bırakıldı" />
+          <Feature title="Cabo Hazır" desc="HMAC webhook entegrasyonu hazır" />
         </div>
       </section>
     </div>

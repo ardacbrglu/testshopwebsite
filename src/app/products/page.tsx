@@ -12,7 +12,7 @@ type Product = {
   unitOriginal: number;
   unitFinal: number;
   percentOff: number;
-  discountLabel: string | null;
+  discountLabel: string | null; // yalnızca cabo_ref varsa dolu
   contracted: boolean;
   currency: string;
 };
@@ -57,18 +57,24 @@ export default function ProductsPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {items.map((p) => (
-          <div key={p.slug} className="rounded-2xl border border-white/10 bg-black/30 p-4 shadow hover:shadow-lg transition">
+          <div
+            key={p.slug}
+            className="rounded-2xl border border-white/10 bg-black/30 p-4 shadow hover:shadow-lg transition"
+          >
             <Link href={`/products/${p.slug}`}>
-              {/* uyarı: <Image /> önerilir — şu an bilinçli olarak img */}
+              {/* Not: demo amaçlı <img>; üretimde next/image önerilir */}
               <img src={p.image} alt={p.name} className="w-full h-48 object-cover rounded-xl mb-3" />
             </Link>
+
             <div className="font-semibold">{p.name}</div>
             <div className="text-white/70 text-sm mb-3">{p.description}</div>
 
             <div className="flex items-center gap-2 mb-3">
               {p.discountLabel ? (
                 <>
-                  <span className="line-through text-white/40">{money(p.unitOriginal, p.currency)}</span>
+                  <span className="line-through text-white/40">
+                    {money(p.unitOriginal, p.currency)}
+                  </span>
                   <span className="font-semibold">{money(p.unitFinal, p.currency)}</span>
                   <span className="text-emerald-400 text-sm">({p.discountLabel})</span>
                 </>
@@ -83,17 +89,31 @@ export default function ProductsPage() {
                 min={1}
                 className="w-20 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                 value={qty[p.slug] || 1}
-                onChange={(e) => setQty((s) => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))}
+                onChange={(e) =>
+                  setQty((s) => ({
+                    ...s,
+                    [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)),
+                  }))
+                }
               />
-              <button onClick={() => addToCart(p)} className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10">
+              <button
+                onClick={() => addToCart(p)}
+                className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10"
+              >
                 Sepete Ekle
               </button>
-              <Link href={`/products/${p.slug}`} className="ml-auto text-white/70 hover:text-white text-sm underline">
+              <Link
+                href={`/products/${p.slug}`}
+                className="ml-auto text-white/70 hover:text-white text-sm underline"
+              >
                 Detay
               </Link>
             </div>
 
-            {p.contracted && <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>}
+            {/* Rozet sadece indirim görünürken çıksın */}
+            {p.discountLabel && (
+              <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>
+            )}
           </div>
         ))}
       </div>

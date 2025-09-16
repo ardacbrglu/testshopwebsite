@@ -1,12 +1,16 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 
-/* Basit inline ikonlar (paketsiz) */
+/* Basit inline ikonlar */
 const Icon = {
+  Home: (p) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
+      <path fill="currentColor" d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3z"/>
+    </svg>
+  ),
   Grid: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
       <path fill="currentColor" d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/>
@@ -20,11 +24,6 @@ const Icon = {
   Receipt: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
       <path fill="currentColor" d="M7 2h10l2 2v18l-2-1-2 1-2-1-2 1-2-1-2 1V4l2-2Zm2 6h6v2H9V8Zm0 4h6v2H9v-2Z"/>
-    </svg>
-  ),
-  Logout: (p) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
-      <path fill="currentColor" d="M10 17v2H4V5h6v2H6v10h4Zm9-5-4-4v3h-6v2h6v3l4-4Z"/>
     </svg>
   ),
 };
@@ -45,43 +44,14 @@ function NavLink({ href, children, onClick }) {
   );
 }
 
-function NavBarInner() {
+export default function NavBar() {
   const [open, setOpen] = useState(false);
-  const [user, setUser] = useState(undefined); // undefined=loading, null=public
-  const pathname = usePathname();
 
-  async function fetchMe() {
-    try {
-      const r = await fetch("/api/me", { cache: "no-store" });
-      const j = await r.json();
-      setUser(j.user ?? null);
-    } catch {
-      setUser(null);
-    }
-  }
-
-  useEffect(() => {
-    fetchMe();            // sayfa değiştikçe tekrar kontrol
-  }, [pathname]);
-
-  useEffect(() => {
-    const onStorage = (e) => {       // login/logout sinyali
-      if (e.key === "auth:updated") fetchMe();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  const PublicLinks = () => (
+  const Links = () => (
     <>
-      <NavLink href="/" onClick={() => setOpen(false)}>Anasayfa</NavLink>
-      <NavLink href="/login" onClick={() => setOpen(false)}>Giriş</NavLink>
-      <NavLink href="/register" onClick={() => setOpen(false)}>Kayıt</NavLink>
-    </>
-  );
-
-  const AuthedLinks = () => (
-    <>
+      <NavLink href="/" onClick={() => setOpen(false)}>
+        <Icon.Home /> Anasayfa
+      </NavLink>
       <NavLink href="/products" onClick={() => setOpen(false)}>
         <Icon.Grid /> Ürünler
       </NavLink>
@@ -91,28 +61,16 @@ function NavBarInner() {
       <NavLink href="/orders" onClick={() => setOpen(false)}>
         <Icon.Receipt /> Satın Alımlarım
       </NavLink>
-      <form action="/api/logout" method="post" onSubmit={() => {
-        setOpen(false);
-        localStorage.setItem("auth:updated", Date.now().toString());
-      }}>
-        <button
-          type="submit"
-          className="inline-flex items-center gap-2 rounded-xl px-3 py-1.5 border border-neutral-700 hover:bg-neutral-900 transition"
-          title="Çıkış"
-        >
-          <Icon.Logout /> Çıkış
-        </button>
-      </form>
     </>
   );
 
   return (
     <div className="w-full flex items-center justify-between" suppressHydrationWarning>
-      <Link href={user ? "/products" : "/"} className="font-semibold">Test Shop</Link>
+      <Link href="/" className="font-semibold">Test Shop</Link>
 
       {/* Desktop */}
       <nav className="hidden md:flex items-center gap-5">
-        {user ? <AuthedLinks /> : <PublicLinks />}
+        <Links />
       </nav>
 
       {/* Mobile hamburger */}
@@ -131,13 +89,10 @@ function NavBarInner() {
       {open && (
         <div className="md:hidden absolute left-0 right-0 top-16 z-40 border-b border-neutral-800 bg-neutral-950">
           <div className="container py-4 flex flex-col gap-3">
-            {user ? <AuthedLinks /> : <PublicLinks />}
+            <Links />
           </div>
         </div>
       )}
     </div>
   );
 }
-
-/* ÖNEMLİ: NavBar’ı client-only yaparak hydration mismatch’i kesin çözüyoruz. */
-export default dynamic(() => Promise.resolve(NavBarInner), { ssr: false });
