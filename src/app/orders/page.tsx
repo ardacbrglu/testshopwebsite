@@ -4,13 +4,27 @@ import { useEffect, useState } from "react";
 
 type StoredOrder = {
   id: string;
-  total: number; // kuruş değil, sayfada gösterdiğimiz TL değeri
+  total: number; // TL cinsinden gösterim
   at: string;    // ISO tarih
 };
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
+
+/* ---------- type guards ---------- */
+function isObjectRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+function isStoredOrder(v: unknown): v is StoredOrder {
+  if (!isObjectRecord(v)) return false;
+  return (
+    typeof v.id === "string" &&
+    typeof v.total === "number" &&
+    typeof v.at === "string"
+  );
+}
+/* --------------------------------- */
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<StoredOrder[]>([]);
@@ -19,20 +33,8 @@ export default function OrdersPage() {
     try {
       const raw = localStorage.getItem("orders");
       const parsed: unknown = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(parsed)) {
-        // basit doğrulama
-        const safe = parsed.filter(
-          (o: unknown): o is StoredOrder =>
-            typeof o === "object" &&
-            o !== null &&
-            typeof (o as any).id === "string" &&
-            typeof (o as any).total === "number" &&
-            typeof (o as any).at === "string"
-        );
-        setOrders(safe);
-      } else {
-        setOrders([]);
-      }
+      const safe = Array.isArray(parsed) ? parsed.filter(isStoredOrder) : [];
+      setOrders(safe);
     } catch {
       setOrders([]);
     }
