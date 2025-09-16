@@ -9,21 +9,7 @@ type Product = {
   unitOriginal: number; discountLabel: string | null; currency: string;
 };
 
-type OrderItemForLS = { id: string; name: string; quantity: number; priceAtPurchase: number };
-type OrderForLS = {
-  id: string;
-  orderNumber: string;
-  totalAmount: number;
-  createdAt: string;
-  items: OrderItemForLS[];
-};
-
-type CheckoutSuccess = {
-  ok: true;
-  orderNumber: string;
-  summary: { total: number; itemCount: number };
-  order?: OrderForLS;
-};
+type CheckoutSuccess = { ok: true; orderNumber: string; summary: { total: number; itemCount: number } };
 type CheckoutError = { ok: false; error?: string };
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
 
@@ -40,17 +26,19 @@ export default function CartPage() {
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem("cart");
       setCart(raw ? (JSON.parse(raw) as StoredCartItem[]) : []);
-    } catch {
-      setCart([]);
-    }
+    } catch { setCart([]); }
     fetch("/api/products", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setCatalog((d?.data ?? []) as Product[]));
+
+    const saved = localStorage.getItem("orderEmail");
+    if (saved) setEmail(saved);
   }, []);
 
   const rows = useMemo(() => {
@@ -86,40 +74,25 @@ export default function CartPage() {
     setBusy(true);
     setMsg(null);
     try {
+      const em = email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+        throw new Error("Lütfen geçerli bir e-posta girin.");
+      }
+      localStorage.setItem("orderEmail", em);
+
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: cart }),
+        body: JSON.stringify({ items: cart, email: em }),
       });
       const data = (await res.json()) as CheckoutResponse;
 
-      if (!res.ok) throw new Error(`http_${res.status}`);
-      if (!isCheckoutSuccess(data)) throw new Error(data.error ?? "checkout_failed");
+      if (!res.ok) throw new Error(data && !isCheckoutSuccess(data) ? (data.error || "http_error") : "http_error");
+      if (!isCheckoutSuccess(data)) throw new Error(data.error || "checkout_failed");
 
-      // Orders sayfası için detaylı kayıt
-      const order: OrderForLS =
-        data.order ??
-        ({
-          id: data.orderNumber,
-          orderNumber: data.orderNumber,
-          createdAt: new Date().toISOString(),
-          totalAmount: data.summary.total,
-          items: rows.map((r) => ({
-            id: r.slug,
-            name: r.product.name,
-            quantity: r.quantity,
-            priceAtPurchase: r.product.unitFinal,
-          })),
-        } as OrderForLS);
-
-      const orders: OrderForLS[] = JSON.parse(localStorage.getItem("orders") || "[]") as OrderForLS[];
-      orders.unshift(order);
-      localStorage.setItem("orders", JSON.stringify(orders));
-
-      // sepeti temizle ve Success sayfasına yönlendir
+      setMsg(`Satın alma başarılı. Sipariş: ${data.orderNumber}`);
       localStorage.removeItem("cart");
       setCart([]);
-      window.location.href = `/success?ord=${encodeURIComponent(data.orderNumber)}`;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "hata";
       setMsg(`Satın alma başarısız: ${message}`);
@@ -131,6 +104,20 @@ export default function CartPage() {
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Sepetim</h1>
+
+      <div className="mb-4">
+        <label className="block text-sm mb-1">E-posta (sipariş için zorunlu)</label>
+        <input
+          type="email"
+          className="w-full max-w-md rounded-md border border-white/20 bg-black/40 px-3 py-2"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+        />
+        <p className="text-xs text-white/60 mt-1">
+          Bu adresle sipariş geçmişinizi “Satın Alımlarım” sayfasından görebilirsiniz.
+        </p>
+      </div>
 
       {rows.length === 0 ? (
         <div className="text-white/70">

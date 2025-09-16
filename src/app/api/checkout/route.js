@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import prisma from "@/lib/prisma";
 import { uid } from "@/lib/format";
 import { getBySlug, getProductCode } from "@/lib/db";
 
@@ -20,19 +21,22 @@ export async function POST(req) {
   try {
     const body = await req.json();
     const items = Array.isArray(body?.items) ? body.items : [];
+    const email = (body?.email || "").toString().trim().toLowerCase();
+
     if (!items.length) {
       return NextResponse.json({ ok: false, error: "empty_cart" }, { status: 400 });
     }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json({ ok: false, error: "invalid_email" }, { status: 400 });
+    }
 
-    // [CABO-INTEGRATION] Ref cookie → indirim görünürlüğü tetikleyicisi
     const c = await cookies();
+    const hasRef = Boolean(c.get("cabo_ref") || c.get("caboRef"));
     const caboRef = c.get("cabo_ref")?.value || c.get("caboRef")?.value || null;
-    const applyDiscounts = !!caboRef;
 
-    // Katalogtan fiyatları (ref varsa indirimli birim fiyat) oku
     const normalized = items
       .map((it) => {
-        const p = getBySlug(it.slug, { applyDiscounts });
+        const p = getBySlug(it.slug, hasRef); // <<< indirim yalnız ref varsa
         const qty = Math.max(1, Math.floor(it.quantity || 1));
         if (!p) return null;
         const unit = p.unitFinal ?? p.price;
@@ -41,10 +45,10 @@ export async function POST(req) {
           slug: p.slug,
           name: p.name,
           quantity: qty,
-          unitPrice: unit, // TRY
+          unitPrice: unit,
           contracted: p.contracted,
           productCode: getProductCode(p.id),
-          lineTotal: Math.round(unit * qty * 100) / 100, // TRY
+          lineTotal: Math.round(unit * qty * 100) / 100,
         };
       })
       .filter(Boolean);
@@ -56,27 +60,40 @@ export async function POST(req) {
     const orderTotal = normalized.reduce((s, n) => s + n.lineTotal, 0);
     const orderNumber = uid("ORD");
 
-    // Orders sayfası için detay
-    const orderForClient = {
-      id: orderNumber,
-      orderNumber,
-      createdAt: new Date().toISOString(),
-      totalAmount: Math.round(orderTotal * 100) / 100,
-      items: normalized.map((n) => ({
-        id: n.slug,
-        name: n.name,
-        quantity: n.quantity,
-        priceAtPurchase: n.unitPrice, // TRY birim
-      })),
-    };
+    // --- 1) DB: user + order + items
+    const user = await prisma.user.upsert({
+      where: { email },
+      update: {},
+      create: { email },
+      select: { id: true },
+    });
 
-    // [CABO-INTEGRATION] S2S postback (confirmed)
+    await prisma.order.create({
+      data: {
+        orderNumber,
+        status: "confirmed",
+        caboRef: caboRef || null,
+        currency: "TRY",
+        totalAmount: Math.round(orderTotal * 100), // kuruş
+        userId: user.id,
+        items: {
+          create: normalized.map((n) => ({
+            productName: n.name,
+            productSlug: n.slug,
+            quantity: n.quantity,
+            unitPriceAtPurchase: Math.round(n.unitPrice * 100),
+            lineTotal: Math.round(n.lineTotal * 100),
+          })),
+        },
+      },
+    });
+
+    // --- 2) Cabo S2S webhook (varsa sözleşmeli ürün)
     let caboResponse = null;
     if (contractedItems.length > 0 && CABO_WEBHOOK_URL && KEY_ID && HMAC_SECRET) {
       const payload = {
         orderNumber,
-        status: "confirmed",
-        caboRef: caboRef || undefined,
+        caboRef,
         items: contractedItems.map((n) => ({
           productCode: n.productCode || undefined,
           productSlug: n.slug,
@@ -100,8 +117,6 @@ export async function POST(req) {
           "X-Timestamp": ts,
           "X-Cabo-Signature": sig,
           "X-Signature": sig,
-          "X-Request-Id": orderNumber,
-          "X-Idempotency-Key": orderNumber,
         },
         body: raw,
         cache: "no-store",
@@ -113,21 +128,18 @@ export async function POST(req) {
       caboResponse = { status: res.status, data: parsed };
     }
 
-    return NextResponse.json(
-      {
-        ok: true,
-        orderNumber,
-        order: orderForClient,
-        summary: {
-          total: Math.round(orderTotal * 100) / 100,
-          itemCount: normalized.reduce((s, n) => s + n.quantity, 0),
-        },
-        cabo: caboResponse || { skipped: true, reason: "no_contracted_items_or_missing_env" },
+    return NextResponse.json({
+      ok: true,
+      orderNumber,
+      summary: {
+        total: Math.round(orderTotal * 100) / 100,
+        itemCount: normalized.reduce((s, n) => s + n.quantity, 0),
       },
-      { headers: { "Cache-Control": "no-store" } }
-    );
-  } catch {
-    // Kullanılmayan parametre uyarısı yok; statik mesaj yeterli
+      cabo: caboResponse || { skipped: true, reason: "no_contracted_items_or_missing_env" },
+    }, { headers: { "Cache-Control": "no-store" } });
+
+  } catch (e) {
+    console.error("checkout error:", e);
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
