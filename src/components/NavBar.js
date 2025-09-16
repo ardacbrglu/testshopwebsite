@@ -1,3 +1,4 @@
+// src/components/NavBar.js
 "use client";
 
 import Link from "next/link";
@@ -8,22 +9,22 @@ import { useState } from "react";
 const Icon = {
   Home: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
-      <path fill="currentColor" d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3z"/>
+      <path fill="currentColor" d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3z" />
     </svg>
   ),
   Grid: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
-      <path fill="currentColor" d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/>
+      <path fill="currentColor" d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z" />
     </svg>
   ),
   Cart: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
-      <path fill="currentColor" d="M7 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM7.1 6h14l-2 8H8.2L6.4 4H3V2h4l.6 4Z"/>
+      <path fill="currentColor" d="M7 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM7.1 6h14l-2 8H8.2L6.4 4H3V2h4l.6 4Z" />
     </svg>
   ),
   Receipt: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
-      <path fill="currentColor" d="M7 2h10l2 2v18l-2-1-2 1-2-1-2 1-2-1-2 1V4l2-2Zm2 6h6v2H9V8Zm0 4h6v2H9v-2Z"/>
+      <path fill="currentColor" d="M7 2h10l2 2v18l-2-1-2 1-2-1-2 1-2-1-2 1V4l2-2Zm2 6h6v2H9V8Zm0 4h6v2H9v-2Z" />
     </svg>
   ),
 };

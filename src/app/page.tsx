@@ -27,10 +27,9 @@ export default function HomePage() {
             Simulator
           </span>
         </h1>
-
         <p className="mt-4 text-neutral-300 text-base sm:text-lg">
-          Ürünleri sepete ekle ve “satın al” simülasyonunu çalıştır. Siparişlerin
-          “Satın Alımlarım” sayfasında listelensin. Cabo entegrasyonuna hazır.
+          Ürünleri sepete ekle, “Satın Al” simülasyonunu çalıştır ve geçmişi e-posta ile görüntüle.
+          Cabo entegrasyonuna hazır akış.
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -44,14 +43,14 @@ export default function HomePage() {
             href="/cart"
             className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition"
           >
-            Sepetime Bak
+            Sepete Git
           </Link>
         </div>
 
         <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Feature title="Basit Akış" desc="Ürün → Sepet → Satın Al → Sipariş Geçmişi" />
-          <Feature title="Gerçek Ödeme Yok" desc="Tamamen demo amaçlı" />
-          <Feature title="Cabo Hazır" desc="HMAC webhook entegrasyonu hazır" />
+          <Feature title="Basit Akış" desc="Ürün → Sepet → Satın Al → Geçmiş" />
+          <Feature title="Gerçek Ödeme Yok" desc="Tamamen demo" />
+          <Feature title="Cabo Hazır" desc="HMAC webhook + ref cookie" />
         </div>
       </section>
     </div>
