@@ -56,7 +56,7 @@ export async function POST(req) {
     const orderTotal = normalized.reduce((s, n) => s + n.lineTotal, 0);
     const orderNumber = uid("ORD");
 
-    // Sipariş objesini (Orders sayfası için) geriye döneceğiz
+    // Orders sayfası için detay
     const orderForClient = {
       id: orderNumber,
       orderNumber,
@@ -70,19 +70,19 @@ export async function POST(req) {
       })),
     };
 
-    // S2S postback (sadece contracted ürün varsa ve ENV tam ise)
+    // [CABO-INTEGRATION] S2S postback (confirmed)
     let caboResponse = null;
     if (contractedItems.length > 0 && CABO_WEBHOOK_URL && KEY_ID && HMAC_SECRET) {
       const payload = {
         orderNumber,
-        status: "confirmed", // [CABO-INTEGRATION]
+        status: "confirmed",
         caboRef: caboRef || undefined,
         items: contractedItems.map((n) => ({
           productCode: n.productCode || undefined,
           productSlug: n.slug,
           quantity: n.quantity,
-          unitPriceCharged: n.unitPrice, // TRY
-          lineTotal: n.lineTotal,        // TRY
+          unitPriceCharged: n.unitPrice,
+          lineTotal: n.lineTotal,
         })),
       };
 
@@ -94,7 +94,6 @@ export async function POST(req) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // [CABO-INTEGRATION] HMAC header seti
           "X-Cabo-Key-Id": KEY_ID,
           "X-Key-Id": KEY_ID,
           "X-Cabo-Timestamp": ts,
@@ -118,7 +117,7 @@ export async function POST(req) {
       {
         ok: true,
         orderNumber,
-        order: orderForClient, // [CABO-INTEGRATION] Orders sayfası için detay
+        order: orderForClient,
         summary: {
           total: Math.round(orderTotal * 100) / 100,
           itemCount: normalized.reduce((s, n) => s + n.quantity, 0),
@@ -127,7 +126,8 @@ export async function POST(req) {
       },
       { headers: { "Cache-Control": "no-store" } }
     );
-  } catch (e) {
+  } catch {
+    // Kullanılmayan parametre uyarısı yok; statik mesaj yeterli
     return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }

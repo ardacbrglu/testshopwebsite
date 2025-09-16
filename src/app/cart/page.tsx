@@ -22,7 +22,7 @@ type CheckoutSuccess = {
   ok: true;
   orderNumber: string;
   summary: { total: number; itemCount: number };
-  order?: OrderForLS; // [CABO-INTEGRATION] API artık detay döndürüyor
+  order?: OrderForLS;
 };
 type CheckoutError = { ok: false; error?: string };
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
@@ -96,7 +96,7 @@ export default function CartPage() {
       if (!res.ok) throw new Error(`http_${res.status}`);
       if (!isCheckoutSuccess(data)) throw new Error(data.error ?? "checkout_failed");
 
-      // [CABO-INTEGRATION] Orders sayfasının beklediği detaylı kayıt formatı
+      // Orders sayfası için detaylı kayıt
       const order: OrderForLS =
         data.order ??
         ({
@@ -116,9 +116,10 @@ export default function CartPage() {
       orders.unshift(order);
       localStorage.setItem("orders", JSON.stringify(orders));
 
-      setMsg("Satın alma başarılı");
+      // sepeti temizle ve Success sayfasına yönlendir
       localStorage.removeItem("cart");
       setCart([]);
+      window.location.href = `/success?ord=${encodeURIComponent(data.orderNumber)}`;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "hata";
       setMsg(`Satın alma başarısız: ${message}`);
