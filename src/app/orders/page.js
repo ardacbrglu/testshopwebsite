@@ -1,18 +1,18 @@
 // src/app/orders/page.js
 import { query } from "@/lib/db";
-import { toPriceTextTRY } from "@/lib/currency";
+import { tryFromKurus } from "@/lib/currency";
 
 export const dynamic = "force-dynamic";
 
 export default async function Orders() {
-  const orders = await query("SELECT id, order_number, total_amount, discount_total, created_at FROM orders ORDER BY id DESC LIMIT 20");
-  const itemsByOrder = {};
-  const items = await query(
-    "SELECT order_id, product_slug, product_name, quantity, unit_price, unit_price_after_discount FROM order_items ORDER BY id DESC LIMIT 200"
+  const orders = await query(
+    "SELECT id, order_number, total_amount, discount_total, created_at FROM orders ORDER BY id DESC LIMIT 50"
   );
-  for (const it of items) {
-    (itemsByOrder[it.order_id] ||= []).push(it);
-  }
+  const items = await query(
+    "SELECT order_id, product_slug, product_name, quantity, unit_price, unit_price_after_discount FROM order_items ORDER BY id DESC"
+  );
+  const byOrder = {};
+  for (const it of items) (byOrder[it.order_id] ||= []).push(it);
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
@@ -25,17 +25,16 @@ export default async function Orders() {
               <div className="text-sm text-neutral-400">{new Date(o.created_at).toLocaleString("tr-TR")}</div>
             </div>
             <div className="text-sm mb-2">
-              Toplam: <b>{toPriceTextTRY(o.total_amount)}</b>{" "}
+              Toplam: <b>{tryFromKurus(o.total_amount)}</b>{" "}
               {o.discount_total > 0 && (
-                <span className="ml-2 text-green-400">İndirim: −{toPriceTextTRY(o.discount_total)}</span>
+                <span className="ml-2 text-green-400">İndirim: −{tryFromKurus(o.discount_total)}</span>
               )}
             </div>
             <ul className="text-sm text-neutral-300 list-disc ml-6">
-              {(itemsByOrder[o.id] || []).map((it, idx) => (
-                <li key={idx}>
-                  {it.product_name} ×{it.quantity} —{" "}
-                  {toPriceTextTRY(it.unit_price_after_discount)}{" "}
-                  <span className="text-neutral-500 line-through ml-1">{toPriceTextTRY(it.unit_price)}</span>
+              {(byOrder[o.id] || []).map((it, i) => (
+                <li key={i}>
+                  {it.product_name} ×{it.quantity} — {tryFromKurus(it.unit_price_after_discount)}{" "}
+                  <span className="text-neutral-500 line-through ml-1">{tryFromKurus(it.unit_price)}</span>
                 </li>
               ))}
             </ul>

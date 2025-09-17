@@ -2,7 +2,7 @@
 import { notFound } from "next/navigation";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
-import { toPriceTextTRY } from "@/lib/currency";
+import { tryFromKurus } from "@/lib/currency";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,7 @@ export default async function ProductDetail({ params }) {
   const d = calcDiscountedUnitPrice(p.price, attrib, p.slug);
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-8">
+    <main className="mx-auto max-w-5xl px-4 py-8">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <img src={p.imageUrl} alt={p.name} className="w-full h-64 object-cover rounded-2xl" />
         <div>
@@ -30,12 +30,12 @@ export default async function ProductDetail({ params }) {
             <>
               <div className="text-sm text-green-400 mb-1">Ref indirimi −{d.discountPct}%</div>
               <div className="text-2xl mb-4">
-                <span className="line-through text-neutral-500 mr-3">{toPriceTextTRY(p.price)}</span>
-                <span className="font-bold">{toPriceTextTRY(d.finalPrice)}</span>
+                <span className="line-through text-neutral-500 mr-3">{tryFromKurus(p.price)}</span>
+                <span className="font-bold">{tryFromKurus(d.finalPrice)}</span>
               </div>
             </>
           ) : (
-            <div className="text-2xl mb-4">{toPriceTextTRY(p.price)}</div>
+            <div className="text-2xl mb-4">{tryFromKurus(p.price)}</div>
           )}
 
           <form action={`/api/checkout`} method="post">

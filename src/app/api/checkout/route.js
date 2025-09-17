@@ -2,16 +2,7 @@
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/**
- * Güvenlik Notları:
- * - Tüm para birimleri INT (kuruş/TL) olarak işlenir, ondalık yok.
- * - İndirim yalnızca imzalı HttpOnly "cabo_attrib" çerezi varsa uygulanır.
- * - Satış bildirimi (merchant -> Cabo) HMAC-SHA256 ile imzalanır.
- * - Yalnızca indirim uygulanmış siparişlerde post yapılır (aksi halde komisyon yok).
- */
-
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { randomUUID, createHmac } from "crypto";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
@@ -25,15 +16,13 @@ async function getProductBySlug(slug) {
 }
 
 function parseForm(body) {
-  // form-urlencoded POST
   const slug = body.get("slug");
   const qty = Math.max(1, parseInt(body.get("qty") || "1", 10));
   return { slug, qty };
 }
 
-function signHmac(timestamp, rawBody, key) {
-  const data = `${timestamp}.${rawBody}`;
-  return createHmac("sha256", key).update(data).digest("hex");
+function signHmac(ts, raw, key) {
+  return createHmac("sha256", key).update(`${ts}.${raw}`).digest("hex");
 }
 
 export async function POST(req) {
@@ -47,56 +36,47 @@ export async function POST(req) {
       return NextResponse.json({ ok: false, error: "product not found" }, { status: 404 });
     }
 
-    // Attribution / indirim
+    // Ref çerezi & indirim
     const attrib = getAttribution();
-    const d = calcDiscountedUnitPrice(product.price, attrib, product.slug);
+    const disc = calcDiscountedUnitPrice(product.price, attrib, product.slug);
 
-    const unitPrice = product.price;                 // INT
-    const unitPriceAfter = d.finalPrice;             // INT
+    const unit = product.price;              // kuruş
+    const unitAfter = disc.finalPrice;       // kuruş
     const quantity = qty;
 
-    const lineTotal = unitPrice * quantity;
-    const lineTotalAfter = unitPriceAfter * quantity;
-    const discountTotal = lineTotal - lineTotalAfter;
+    const line = unit * quantity;
+    const lineAfter = unitAfter * quantity;
+    const discountTotal = line - lineAfter;
 
-    // Sipariş yaz
+    // sipariş yaz
     const orderNumber = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
-    const result = await query(
+    const ins = await query(
       "INSERT INTO orders (order_number, total_amount, discount_total) VALUES (?,?,?)",
-      [orderNumber, lineTotalAfter, discountTotal]
+      [orderNumber, lineAfter, discountTotal]
     );
+    const orderId = ins.insertId;
 
-    const orderId = result.insertId;
     await query(
-      `INSERT INTO order_items 
+      `INSERT INTO order_items
        (order_id, product_id, product_slug, product_name, product_code, quantity, unit_price, unit_price_after_discount)
        VALUES (?,?,?,?,?,?,?,?)`,
-      [
-        orderId,
-        String(product.id),
-        product.slug,
-        product.name,
-        product.product_code,
-        quantity,
-        unitPrice,
-        unitPriceAfter,
-      ]
+      [orderId, product.id, product.slug, product.name, product.product_code, quantity, unit, unitAfter]
     );
 
-    // İndirim uygulanmadıysa Cabo'ya post etme (komisyon yok)
-    if (!d.applied || discountTotal <= 0 || !attrib) {
+    // İndirim uygulanmadıysa Cabo'ya post yok (senin kuralın)
+    if (!disc.applied || discountTotal <= 0 || !attrib) {
       return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
     }
 
-    // ---- Cabo'ya satış bildirimi ----
+    // ---- Cabo'ya satış bildir ----
     const payload = {
       version: 1,
       requestId: randomUUID(),
       order: {
         orderId: String(orderId),
         orderNumber,
-        totalAmount: lineTotalAfter,   // INT
-        discountTotal,                 // INT
+        totalAmount: lineAfter,   // kuruş
+        discountTotal,            // kuruş
         createdAt: new Date().toISOString(),
         items: [
           {
@@ -105,26 +85,26 @@ export async function POST(req) {
             productSlug: product.slug,
             name: product.name,
             quantity,
-            unitPrice: unitPrice,
-            unitPriceAfterDiscount: unitPriceAfter,
-          },
-        ],
+            unitPrice: unit,
+            unitPriceAfterDiscount: unitAfter
+          }
+        ]
       },
       referral: {
         token: attrib.ref,
         linkId: attrib.lid,
-        scope: attrib.scope,           // sitewide | single
-      },
+        scope: attrib.scope
+      }
     };
 
     const raw = JSON.stringify(payload);
     const ts = Math.floor(Date.now() / 1000).toString();
-    const keyId = process.env.CABO_KEY_ID;
     const key = process.env.CABO_MERCHANT_KEY;
+    const keyId = process.env.CABO_KEY_ID;
 
     const sig = signHmac(ts, raw, key);
 
-    const res = await fetch(process.env.CABO_CALLBACK_URL, {
+    await fetch(process.env.CABO_CALLBACK_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -132,15 +112,10 @@ export async function POST(req) {
         "x-cabo-key-id": keyId,
         "x-cabo-signature": `v1=${sig}`,
         "x-request-id": payload.requestId,
-        "cache-control": "no-store",
+        "cache-control": "no-store"
       },
-      body: raw,
-    });
-
-    // Cabo idempotent çalışır; 2xx değilse bile siparişi yerelde tamamlıyoruz
-    if (!res.ok) {
-      // Loglamak istersen buraya console.error(res.status)
-    }
+      body: raw
+    }).catch(() => { /* ağ hatası olsa bile siparişi yerelde tutuyoruz */ });
 
     return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
   } catch (e) {
