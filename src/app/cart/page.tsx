@@ -1,10 +1,15 @@
-// src/app/cart/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-type StoredCartItem = { slug: string; quantity: number };
+type StoredCartItem = {
+  slug: string;
+  quantity: number;
+  // satır atribüsyonu:
+  caboRef?: string | null; // ekleme anındaki token (varsa)
+};
+
 type Product = {
   slug: string;
   name: string;
@@ -13,6 +18,7 @@ type Product = {
   unitOriginal: number;
   discountLabel: string | null;
   currency: string;
+  contracted: boolean;
 };
 
 type OrderItem = { slug: string; name: string; quantity: number; unitPrice: number };
@@ -27,11 +33,10 @@ type CheckoutSuccess = {
 };
 
 type CheckoutError = { ok: false; error?: string };
-
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
 
 function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess {
-  return Boolean(d && (d as CheckoutSuccess).ok === true);
+  return (d as CheckoutSuccess)?.ok === true;
 }
 
 function money(n: number, currency = "TRY") {
@@ -71,8 +76,7 @@ export default function CartPage() {
         return { ...ci, product: p, line };
       })
       .filter(
-        (x): x is { slug: string; quantity: number; product: Product; line: number } =>
-          Boolean(x)
+        (x): x is StoredCartItem & { product: Product; line: number } => Boolean(x)
       );
   }, [cart, catalog]);
 
@@ -116,29 +120,22 @@ export default function CartPage() {
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // cart satırlarında caboRef bulunuyor (yoksa null)
         body: JSON.stringify({ items: cart, email: em }),
       });
 
       const data: CheckoutResponse = await res.json();
 
-      // HTTP hatası
       if (!res.ok) {
         throw new Error(`http_${res.status}`);
-      }
-      // İş mantığı hatası
-      if (!isCheckoutSuccess(data)) {
-        const ce = data as CheckoutError; // daralt
-        throw new Error(ce.error ?? "checkout_failed");
+      } else if (!isCheckoutSuccess(data)) {
+        const err = (data as CheckoutError).error || "checkout_failed";
+        throw new Error(err);
       }
 
-      // geçmişi bu e-posta altında sakla
+      // geçmişi bu e-posta altında sakla (siparişte hangi ürünler var)
       const key = `orders_by_email:${em}`;
-      const list: Array<{
-        id: string;
-        at: string;
-        items: OrderItem[];
-        total: number;
-      }> = JSON.parse(localStorage.getItem(key) || "[]");
+      const list: any[] = JSON.parse(localStorage.getItem(key) || "[]");
       list.unshift({
         id: data.orderNumber,
         at: new Date().toISOString(),
@@ -147,10 +144,9 @@ export default function CartPage() {
       });
       localStorage.setItem(key, JSON.stringify(list));
 
-      // basit global liste
+      // basit genel liste
       const keyAll = "orders";
-      const orders: Array<{ id: string; total: number; at: string; email: string }> =
-        JSON.parse(localStorage.getItem(keyAll) || "[]");
+      const orders: any[] = JSON.parse(localStorage.getItem(keyAll) || "[]");
       orders.unshift({
         id: data.orderNumber,
         total: data.summary.total,
@@ -162,9 +158,8 @@ export default function CartPage() {
       setMsg("Satın alma tamamlandı. Sipariş numarası: " + data.orderNumber);
       localStorage.removeItem("cart");
       setCart([]);
-    } catch (e) {
-      const m = e instanceof Error ? e.message : "hata";
-      setMsg(`Satın alma başarısız: ${m}`);
+    } catch (e: any) {
+      setMsg(`Satın alma başarısız: ${e?.message || "hata"}`);
     } finally {
       setBusy(false);
     }
@@ -201,10 +196,7 @@ export default function CartPage() {
 
       {rows.length === 0 ? (
         <div className="text-white/70">
-          Sepet boş.{" "}
-          <Link href="/products" className="underline">
-            Ürünlere dön
-          </Link>
+          Sepet boş. <Link href="/products" className="underline">Ürünlere dön</Link>
         </div>
       ) : (
         <>
@@ -214,7 +206,6 @@ export default function CartPage() {
                 key={r.slug}
                 className="flex items-center gap-4 rounded-xl border border-white/10 p-3"
               >
-                {/* Not: demo için img, üretimde next/image tercih edilir */}
                 <img
                   src={r.product.image}
                   alt={r.product.name}
@@ -237,6 +228,12 @@ export default function CartPage() {
                       <span>{money(r.product.unitFinal, currency)}</span>
                     )}
                   </div>
+                  {/* satır atribüteli mi? */}
+                  {r.caboRef ? (
+                    <div className="text-xs text-emerald-400 mt-1">
+                      Cabo atribüteli satır
+                    </div>
+                  ) : null}
                 </div>
                 <input
                   type="number"

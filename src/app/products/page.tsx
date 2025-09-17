@@ -4,23 +4,27 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 type Product = {
-  id: string;
   slug: string;
   name: string;
   description: string;
   image: string;
   unitOriginal: number;
   unitFinal: number;
-  percentOff: number;
-  discountLabel: string | null; // yalnızca cabo_ref varsa dolu
+  discountLabel: string | null;
   contracted: boolean;
   currency: string;
 };
 
-type StoredCartItem = { slug: string; quantity: number };
+type StoredCartItem = { slug: string; quantity: number; caboRef?: string | null };
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
+}
+
+function getCookie(name: string) {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+  return m ? decodeURIComponent(m[2]) : null;
 }
 
 export default function ProductsPage() {
@@ -35,11 +39,12 @@ export default function ProductsPage() {
   }, []);
 
   const addToCart = (p: Product) => {
+    const token = getCookie("caboRef") || getCookie("cabo_ref");
     const q = Math.max(1, Math.floor(qty[p.slug] || 1));
-    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]") as StoredCartItem[];
+    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
-    else cart.push({ slug: p.slug, quantity: q });
+    else cart.push({ slug: p.slug, quantity: q, caboRef: token || undefined });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
     setTimeout(() => setToast(null), 1600);
@@ -50,19 +55,15 @@ export default function ProductsPage() {
       <h1 className="text-2xl font-semibold mb-6">Ürünler</h1>
 
       {toast && (
-        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg backdrop-blur">
+        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">
           {toast}
         </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {items.map((p) => (
-          <div
-            key={p.slug}
-            className="rounded-2xl border border-white/10 bg-black/30 p-4 shadow hover:shadow-lg transition"
-          >
+          <div key={p.slug} className="rounded-2xl border border-white/10 bg-black/30 p-4">
             <Link href={`/products/${p.slug}`}>
-              {/* Not: demo amaçlı <img>; üretimde next/image önerilir */}
               <img src={p.image} alt={p.name} className="w-full h-48 object-cover rounded-xl mb-3" />
             </Link>
 
@@ -90,30 +91,18 @@ export default function ProductsPage() {
                 className="w-20 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                 value={qty[p.slug] || 1}
                 onChange={(e) =>
-                  setQty((s) => ({
-                    ...s,
-                    [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)),
-                  }))
+                  setQty((s) => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))
                 }
               />
-              <button
-                onClick={() => addToCart(p)}
-                className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10"
-              >
+              <button onClick={() => addToCart(p)} className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10">
                 Sepete Ekle
               </button>
-              <Link
-                href={`/products/${p.slug}`}
-                className="ml-auto text-white/70 hover:text-white text-sm underline"
-              >
+              <Link href={`/products/${p.slug}`} className="ml-auto text-white/70 hover:text-white text-sm underline">
                 Detay
               </Link>
             </div>
 
-            {/* Rozet sadece indirim görünürken çıksın */}
-            {p.discountLabel && (
-              <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>
-            )}
+            {p.discountLabel && <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>}
           </div>
         ))}
       </div>

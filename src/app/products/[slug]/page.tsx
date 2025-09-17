@@ -4,27 +4,30 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
 type Product = {
-  id: string;
   slug: string;
   name: string;
   description: string;
   image: string;
   unitOriginal: number;
   unitFinal: number;
-  discountLabel: string | null; // indirim metni (yalnızca cabo_ref varsa dolar)
+  discountLabel: string | null;
   currency: string;
-  contracted: boolean;          // sözleşmeli ürün bilgisi (rozet için değil)
+  contracted: boolean;
 };
 
-type StoredCartItem = { slug: string; quantity: number };
+type StoredCartItem = { slug: string; quantity: number; caboRef?: string | null };
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
+function getCookie(name: string) {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+  return m ? decodeURIComponent(m[2]) : null;
+}
 
 export default function ProductDetail() {
-  const params = useParams<{ slug: string }>();
-  const slug = params?.slug;
+  const { slug } = useParams<{ slug: string }>();
   const [p, setP] = useState<Product | null>(null);
   const [q, setQ] = useState(1);
   const [toast, setToast] = useState<string | null>(null);
@@ -39,10 +42,11 @@ export default function ProductDetail() {
   if (!p) return <div className="p-8">Yükleniyor…</div>;
 
   const add = () => {
-    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]") as StoredCartItem[];
+    const token = getCookie("caboRef") || getCookie("cabo_ref");
+    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
-    else cart.push({ slug: p.slug, quantity: q });
+    else cart.push({ slug: p.slug, quantity: q, caboRef: token || undefined });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
     setTimeout(() => setToast(null), 1600);
@@ -52,16 +56,9 @@ export default function ProductDetail() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
-      {toast && (
-        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">
-          {toast}
-        </div>
-      )}
-
+      {toast && <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">{toast}</div>}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Not: demo amaçlı <img>; üretimde next/image tercih edilir */}
         <img src={p.image} alt={p.name} className="w-full h-72 object-cover rounded-2xl" />
-
         <div>
           <h1 className="text-2xl font-semibold mb-2">{p.name}</h1>
           <p className="text-white/70 mb-4">{p.description}</p>
@@ -69,9 +66,7 @@ export default function ProductDetail() {
           <div className="flex items-center gap-2 mb-4">
             {p.discountLabel ? (
               <>
-                <span className="line-through text-white/40">
-                  {money(p.unitOriginal, p.currency)}
-                </span>
+                <span className="line-through text-white/40">{money(p.unitOriginal, p.currency)}</span>
                 <span className="font-semibold">{money(p.unitFinal, p.currency)}</span>
                 <span className="text-emerald-400 text-sm">({p.discountLabel})</span>
               </>
@@ -94,16 +89,10 @@ export default function ProductDetail() {
           </div>
 
           <div className="text-sm text-white/70">
-            Ara Toplam:{" "}
-            <span className="font-semibold text-white">
-              {money(subtotal, p.currency)}
-            </span>
+            Ara Toplam: <span className="font-semibold text-white">{money(subtotal, p.currency)}</span>
           </div>
 
-          {/* Rozet sadece indirim GÖRÜNÜRKEN çıksın */}
-          {p.discountLabel && (
-            <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>
-          )}
+          {p.discountLabel && <div className="mt-2 text-xs text-emerald-400">Cabo indirimli ürün</div>}
         </div>
       </div>
     </div>
