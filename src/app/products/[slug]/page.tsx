@@ -1,4 +1,4 @@
-// app/products/[slug]/page.tsx
+// src/app/products/[slug]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -29,9 +29,9 @@ export default function ProductDetail() {
 
   useEffect(() => {
     if (!slug) return;
-    const hdrs: HeadersInit = {};
+    const hdrs: Record<string, string> = {};
     if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
-      (hdrs as any)["x-cabo-preview"] = "1";
+      hdrs["x-cabo-preview"] = "1";
     }
     fetch(`/api/products?slug=${encodeURIComponent(slug)}`, { cache: "no-store", headers: hdrs })
       .then((r) => r.json())
@@ -42,8 +42,7 @@ export default function ProductDetail() {
   if (!p) return <div className="p-8">Yükleniyor…</div>;
 
   const add = () => {
-    const raw = localStorage.getItem("cart");
-    const cart: { slug: string; quantity: number }[] = raw ? JSON.parse(raw) : [];
+    const cart: { slug: string; quantity: number }[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
     else cart.push({ slug: p.slug, quantity: q });

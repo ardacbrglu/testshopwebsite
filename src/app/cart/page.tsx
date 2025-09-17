@@ -1,4 +1,4 @@
-// app/cart/page.tsx
+// src/app/cart/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -44,9 +44,9 @@ export default function CartPage() {
     } catch {
       setCart([]);
     }
-    const hdrs: HeadersInit = {};
+    const hdrs: Record<string, string> = {};
     if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
-      (hdrs as any)["x-cabo-preview"] = "1";
+      hdrs["x-cabo-preview"] = "1";
     }
     fetch("/api/products", { cache: "no-store", headers: hdrs })
       .then((r) => r.json())
@@ -105,13 +105,11 @@ export default function CartPage() {
         throw new Error(err);
       }
 
-      // Basit “başarılı” sayfasına yönlendirelim
       window.location.href = `/success?ord=${encodeURIComponent(data.orderNumber)}`;
     } catch (e) {
       setMsg(`Satın alma başarısız: ${errMsg(e)}`);
     } finally {
       setBusy(false);
-      // sepeti temizle (başarılıysa success’te zaten yeni sayfa)
       localStorage.removeItem("cart");
       setCart([]);
     }

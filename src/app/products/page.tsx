@@ -1,4 +1,4 @@
-// app/products/page.tsx
+// src/app/products/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -26,9 +26,9 @@ export default function ProductsPage() {
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
-    const hdrs: HeadersInit = {};
+    const hdrs: Record<string, string> = {};
     if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
-      (hdrs as any)["x-cabo-preview"] = "1";
+      hdrs["x-cabo-preview"] = "1";
     }
     fetch("/api/products", { cache: "no-store", headers: hdrs })
       .then((r) => r.json())
@@ -38,21 +38,24 @@ export default function ProductsPage() {
 
   const addToCart = (p: Product) => {
     const q = Math.max(1, Math.floor(qty[p.slug] || 1));
-    const raw = localStorage.getItem("cart");
-    const cart: { slug: string; quantity: number }[] = raw ? JSON.parse(raw) : [];
+    const cart: { slug: string; quantity: number }[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
     else cart.push({ slug: p.slug, quantity: q });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
-    setTimeout(() => setToast(null), 1500);
+    setTimeout(() => setToast(null), 1600);
   };
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Ürünler</h1>
 
-      {toast && <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">{toast}</div>}
+      {toast && (
+        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg backdrop-blur">
+          {toast}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {items.map((p) => (
