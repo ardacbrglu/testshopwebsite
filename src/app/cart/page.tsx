@@ -1,3 +1,4 @@
+// app/cart/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -5,8 +6,8 @@ import { useEffect, useMemo, useState } from "react";
 
 type StoredCartItem = { slug: string; quantity: number };
 type Product = {
-  slug: string; name: string; image: string; unitFinal: number;
-  unitOriginal: number; discountLabel: string | null; currency: string;
+  slug: string; name: string; image: string;
+  unitFinal: number; unitOriginal: number; discountLabel: string | null; currency: string;
 };
 type OrderItem = { slug: string; name: string; quantity: number; unitPrice: number };
 
@@ -21,12 +22,8 @@ type CheckoutSuccess = {
 type CheckoutError = { ok: false; error?: string };
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
 
-function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess {
-  return !!d && (d as CheckoutSuccess).ok === true;
-}
-function money(n: number, currency = "TRY") {
-  return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
-}
+function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess { return !!d && (d as CheckoutSuccess).ok === true; }
+function money(n: number, currency = "TRY") { return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n); }
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function CartPage() {
@@ -47,24 +44,23 @@ export default function CartPage() {
     } catch {
       setCart([]);
     }
-    fetch("/api/products", { cache: "no-store" })
+    const hdrs: HeadersInit = {};
+    if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
+      (hdrs as any)["x-cabo-preview"] = "1";
+    }
+    fetch("/api/products", { cache: "no-store", headers: hdrs })
       .then((r) => r.json())
       .then((d) => setCatalog((d?.data ?? []) as Product[]))
       .catch(() => setCatalog([]));
   }, []);
 
   const rows = useMemo(() => {
-    return cart
-      .map((ci) => {
-        const p = catalog.find((x) => x.slug === ci.slug);
-        if (!p) return null;
-        const line = Math.round(p.unitFinal * ci.quantity * 100) / 100;
-        return { ...ci, product: p, line };
-      })
-      .filter(
-        (x): x is { slug: string; quantity: number; product: Product; line: number } =>
-          Boolean(x)
-      );
+    return cart.map((ci) => {
+      const p = catalog.find((x) => x.slug === ci.slug);
+      if (!p) return null;
+      const line = Math.round(p.unitFinal * ci.quantity * 100) / 100;
+      return { ...ci, product: p, line };
+    }).filter(Boolean) as { slug: string; quantity: number; product: Product; line: number }[];
   }, [cart, catalog]);
 
   const total = rows.reduce((s, r) => s + r.line, 0);
@@ -85,10 +81,7 @@ export default function CartPage() {
 
   const saveEmail = () => {
     const em = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
-      setMsg("Lütfen geçerli bir e-posta girin.");
-      return;
-    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setMsg("Lütfen geçerli bir e-posta girin."); return; }
     localStorage.setItem("customer_email", em);
     setEmailSaved(true);
     setMsg("E-posta kaydedildi.");
@@ -98,8 +91,7 @@ export default function CartPage() {
     const em = (localStorage.getItem("customer_email") || "").trim().toLowerCase();
     if (!em) { setMsg("Sipariş vermek için e-posta zorunludur."); return; }
 
-    setBusy(true);
-    setMsg(null);
+    setBusy(true); setMsg(null);
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
@@ -113,30 +105,15 @@ export default function CartPage() {
         throw new Error(err);
       }
 
-      const key = `orders_by_email:${em}`;
-      const list: Array<{ id: string; at: string; items: OrderItem[]; total: number }> =
-        JSON.parse(localStorage.getItem(key) || "[]");
-      list.unshift({
-        id: data.orderNumber,
-        at: new Date().toISOString(),
-        items: data.items,
-        total: data.summary.total,
-      });
-      localStorage.setItem(key, JSON.stringify(list));
-
-      const keyAll = "orders";
-      const orders: Array<{ id: string; total: number; at: string; email: string }> =
-        JSON.parse(localStorage.getItem(keyAll) || "[]");
-      orders.unshift({ id: data.orderNumber, total: data.summary.total, at: new Date().toISOString(), email: em });
-      localStorage.setItem(keyAll, JSON.stringify(orders));
-
-      setMsg("Satın alma tamamlandı. Sipariş numarası: " + data.orderNumber);
-      localStorage.removeItem("cart");
-      setCart([]);
-    } catch (e: unknown) {
+      // Basit “başarılı” sayfasına yönlendirelim
+      window.location.href = `/success?ord=${encodeURIComponent(data.orderNumber)}`;
+    } catch (e) {
       setMsg(`Satın alma başarısız: ${errMsg(e)}`);
     } finally {
       setBusy(false);
+      // sepeti temizle (başarılıysa success’te zaten yeni sayfa)
+      localStorage.removeItem("cart");
+      setCart([]);
     }
   };
 
@@ -187,8 +164,7 @@ export default function CartPage() {
                   </div>
                 </div>
                 <input
-                  type="number"
-                  min={1}
+                  type="number" min={1}
                   className="w-24 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                   value={r.quantity}
                   onChange={(e) => setQty(r.slug, Math.max(1, Math.floor(+e.target.value || 1)))}

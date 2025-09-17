@@ -1,3 +1,4 @@
+// app/products/[slug]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -15,8 +16,6 @@ type Product = {
   contracted: boolean;
 };
 
-type StoredCartItem = { slug: string; quantity: number };
-
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
@@ -30,25 +29,27 @@ export default function ProductDetail() {
 
   useEffect(() => {
     if (!slug) return;
-    const hasPreview = typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1";
-    fetch(`/api/products?slug=${encodeURIComponent(slug)}`, {
-      cache: "no-store",
-      headers: hasPreview ? { "x-cabo-preview": "1" } : undefined,
-    })
+    const hdrs: HeadersInit = {};
+    if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
+      (hdrs as any)["x-cabo-preview"] = "1";
+    }
+    fetch(`/api/products?slug=${encodeURIComponent(slug)}`, { cache: "no-store", headers: hdrs })
       .then((r) => r.json())
-      .then((d) => setP((d?.data as Product) ?? null));
+      .then((d) => setP((d?.data as Product) ?? null))
+      .catch(() => setP(null));
   }, [slug]);
 
   if (!p) return <div className="p-8">Yükleniyor…</div>;
 
   const add = () => {
-    const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]");
+    const raw = localStorage.getItem("cart");
+    const cart: { slug: string; quantity: number }[] = raw ? JSON.parse(raw) : [];
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
     else cart.push({ slug: p.slug, quantity: q });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
-    setTimeout(() => setToast(null), 1600);
+    setTimeout(() => setToast(null), 1500);
   };
 
   const subtotal = Math.round(p.unitFinal * q * 100) / 100;

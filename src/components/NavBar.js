@@ -1,11 +1,10 @@
-// src/components/NavBar.js
+// components/NavBar.js
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
-/* Basit inline ikonlar */
 const Icon = {
   Home: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" {...p}>
@@ -36,9 +35,7 @@ function NavLink({ href, children, onClick }) {
     <Link
       href={href}
       onClick={onClick}
-      className={`hover:underline underline-offset-4 flex items-center gap-2 ${
-        active ? "text-neutral-50" : "text-neutral-300"
-      }`}
+      className={`hover:underline underline-offset-4 flex items-center gap-2 ${active ? "text-neutral-50" : "text-neutral-300"}`}
     >
       {children}
     </Link>
@@ -69,12 +66,10 @@ export default function NavBar() {
     <div className="w-full flex items-center justify-between" suppressHydrationWarning>
       <Link href="/" className="font-semibold">Test Shop</Link>
 
-      {/* Desktop */}
       <nav className="hidden md:flex items-center gap-5">
         <Links />
       </nav>
 
-      {/* Mobile hamburger */}
       <button
         className="md:hidden inline-flex items-center justify-center w-10 h-10 rounded-lg border border-neutral-700"
         onClick={() => setOpen(v => !v)}

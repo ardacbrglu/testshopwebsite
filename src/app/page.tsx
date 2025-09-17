@@ -1,6 +1,5 @@
+// app/page.tsx
 import Link from "next/link";
-
-export const dynamic = "force-dynamic";
 
 type FeatureProps = { title: string; desc: string };
 function Feature({ title, desc }: FeatureProps) {
@@ -11,6 +10,8 @@ function Feature({ title, desc }: FeatureProps) {
     </div>
   );
 }
+
+export const dynamic = "force-dynamic";
 
 export default function HomePage() {
   return (
@@ -33,16 +34,10 @@ export default function HomePage() {
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <Link
-            href="/products"
-            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition"
-          >
+          <Link href="/products" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition">
             Ürünlere Git
           </Link>
-          <Link
-            href="/cart"
-            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition"
-          >
+          <Link href="/cart" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition">
             Sepete Git
           </Link>
         </div>

@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -26,12 +27,12 @@ model Product {
   slug        String   @unique
   description String
   imageUrl    String
-  /// Kuruş: 1999 => 19,99 ₺
+  /// Kuruş (ör. 1999 => 19,99 ₺)
   price       Int
+  currency    String   @default("TRY") @db.VarChar(8)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  /// ⬅️ İLİŞKİ: OrderItem.product karşı alanı
   orderItems OrderItem[]
 }
 
@@ -65,8 +66,8 @@ model OrderItem {
   productSlug String
 
   quantity            Int
-  unitPriceAtPurchase Int /// kuruş
-  lineTotal           Int /// kuruş
+  unitPriceAtPurchase Int // kuruş
+  lineTotal           Int // kuruş
 
   @@index([orderId])
   @@index([productId])
