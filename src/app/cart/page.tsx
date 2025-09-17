@@ -3,24 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-type StoredCartItem = {
-  slug: string;
-  quantity: number;
-  // satır atribüsyonu:
-  caboRef?: string | null; // ekleme anındaki token (varsa)
-};
-
+type StoredCartItem = { slug: string; quantity: number };
 type Product = {
-  slug: string;
-  name: string;
-  image: string;
-  unitFinal: number;
-  unitOriginal: number;
-  discountLabel: string | null;
-  currency: string;
-  contracted: boolean;
+  slug: string; name: string; image: string; unitFinal: number;
+  unitOriginal: number; discountLabel: string | null; currency: string;
 };
-
 type OrderItem = { slug: string; name: string; quantity: number; unitPrice: number };
 
 type CheckoutSuccess = {
@@ -31,24 +18,22 @@ type CheckoutSuccess = {
   summary: { total: number; itemCount: number };
   message?: string;
 };
-
 type CheckoutError = { ok: false; error?: string };
 type CheckoutResponse = CheckoutSuccess | CheckoutError;
 
 function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess {
-  return (d as CheckoutSuccess)?.ok === true;
+  return !!d && (d as CheckoutSuccess).ok === true;
 }
-
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function CartPage() {
   const [cart, setCart] = useState<StoredCartItem[]>([]);
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-
   const [email, setEmail] = useState<string>("");
   const [emailSaved, setEmailSaved] = useState<boolean>(false);
 
@@ -64,7 +49,8 @@ export default function CartPage() {
     }
     fetch("/api/products", { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => setCatalog((d?.data ?? []) as Product[]));
+      .then((d) => setCatalog((d?.data ?? []) as Product[]))
+      .catch(() => setCatalog([]));
   }, []);
 
   const rows = useMemo(() => {
@@ -76,7 +62,8 @@ export default function CartPage() {
         return { ...ci, product: p, line };
       })
       .filter(
-        (x): x is StoredCartItem & { product: Product; line: number } => Boolean(x)
+        (x): x is { slug: string; quantity: number; product: Product; line: number } =>
+          Boolean(x)
       );
   }, [cart, catalog]);
 
@@ -109,10 +96,7 @@ export default function CartPage() {
 
   const checkout = async () => {
     const em = (localStorage.getItem("customer_email") || "").trim().toLowerCase();
-    if (!em) {
-      setMsg("Sipariş vermek için e-posta zorunludur.");
-      return;
-    }
+    if (!em) { setMsg("Sipariş vermek için e-posta zorunludur."); return; }
 
     setBusy(true);
     setMsg(null);
@@ -120,22 +104,18 @@ export default function CartPage() {
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // cart satırlarında caboRef bulunuyor (yoksa null)
         body: JSON.stringify({ items: cart, email: em }),
       });
-
       const data: CheckoutResponse = await res.json();
 
-      if (!res.ok) {
-        throw new Error(`http_${res.status}`);
-      } else if (!isCheckoutSuccess(data)) {
-        const err = (data as CheckoutError).error || "checkout_failed";
+      if (!res.ok || !isCheckoutSuccess(data)) {
+        const err = !res.ok ? `http_${res.status}` : (("error" in data && data.error) || "checkout_failed");
         throw new Error(err);
       }
 
-      // geçmişi bu e-posta altında sakla (siparişte hangi ürünler var)
       const key = `orders_by_email:${em}`;
-      const list: any[] = JSON.parse(localStorage.getItem(key) || "[]");
+      const list: Array<{ id: string; at: string; items: OrderItem[]; total: number }> =
+        JSON.parse(localStorage.getItem(key) || "[]");
       list.unshift({
         id: data.orderNumber,
         at: new Date().toISOString(),
@@ -144,22 +124,17 @@ export default function CartPage() {
       });
       localStorage.setItem(key, JSON.stringify(list));
 
-      // basit genel liste
       const keyAll = "orders";
-      const orders: any[] = JSON.parse(localStorage.getItem(keyAll) || "[]");
-      orders.unshift({
-        id: data.orderNumber,
-        total: data.summary.total,
-        at: new Date().toISOString(),
-        email: em,
-      });
+      const orders: Array<{ id: string; total: number; at: string; email: string }> =
+        JSON.parse(localStorage.getItem(keyAll) || "[]");
+      orders.unshift({ id: data.orderNumber, total: data.summary.total, at: new Date().toISOString(), email: em });
       localStorage.setItem(keyAll, JSON.stringify(orders));
 
       setMsg("Satın alma tamamlandı. Sipariş numarası: " + data.orderNumber);
       localStorage.removeItem("cart");
       setCart([]);
-    } catch (e: any) {
-      setMsg(`Satın alma başarısız: ${e?.message || "hata"}`);
+    } catch (e: unknown) {
+      setMsg(`Satın alma başarısız: ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -169,23 +144,16 @@ export default function CartPage() {
     <div className="mx-auto max-w-5xl px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Sepetim</h1>
 
-      {/* e-posta kutusu */}
       <div className="mb-6 max-w-xl">
         <label className="block text-sm mb-1">E-posta (sipariş için zorunlu)</label>
         <div className="flex items-center gap-2">
           <input
             className="w-full rounded-xl border border-white/20 bg-black/40 px-3 py-2"
             value={email}
-            onChange={(e) => {
-              setEmail(e.target.value);
-              setEmailSaved(false);
-            }}
+            onChange={(e) => { setEmail(e.target.value); setEmailSaved(false); }}
             placeholder="you@example.com"
           />
-          <button
-            className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10"
-            onClick={saveEmail}
-          >
+          <button className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10" onClick={saveEmail}>
             Kaydet
           </button>
         </div>
@@ -202,55 +170,31 @@ export default function CartPage() {
         <>
           <div className="space-y-4">
             {rows.map((r) => (
-              <div
-                key={r.slug}
-                className="flex items-center gap-4 rounded-xl border border-white/10 p-3"
-              >
-                <img
-                  src={r.product.image}
-                  alt={r.product.name}
-                  className="w-20 h-20 object-cover rounded-lg"
-                />
+              <div key={r.slug} className="flex items-center gap-4 rounded-xl border border-white/10 p-3">
+                <img src={r.product.image} alt={r.product.name} className="w-20 h-20 object-cover rounded-lg" />
                 <div className="flex-1">
                   <div className="font-medium">{r.product.name}</div>
                   <div className="text-sm text-white/60">
                     {r.product.discountLabel ? (
                       <>
-                        <span className="line-through mr-2">
-                          {money(r.product.unitOriginal, currency)}
-                        </span>
+                        <span className="line-through mr-2">{money(r.product.unitOriginal, currency)}</span>
                         <span>{money(r.product.unitFinal, currency)}</span>
-                        <span className="text-emerald-400 ml-2">
-                          ({r.product.discountLabel})
-                        </span>
+                        <span className="text-emerald-400 ml-2">({r.product.discountLabel})</span>
                       </>
                     ) : (
                       <span>{money(r.product.unitFinal, currency)}</span>
                     )}
                   </div>
-                  {/* satır atribüteli mi? */}
-                  {r.caboRef ? (
-                    <div className="text-xs text-emerald-400 mt-1">
-                      Cabo atribüteli satır
-                    </div>
-                  ) : null}
                 </div>
                 <input
                   type="number"
                   min={1}
                   className="w-24 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                   value={r.quantity}
-                  onChange={(e) =>
-                    setQty(r.slug, Math.max(1, Math.floor(+e.target.value || 1)))
-                  }
+                  onChange={(e) => setQty(r.slug, Math.max(1, Math.floor(+e.target.value || 1)))}
                 />
-                <div className="w-32 text-right font-medium">
-                  {money(r.line, currency)}
-                </div>
-                <button
-                  onClick={() => removeOne(r.slug)}
-                  className="rounded-lg border border-white/20 px-3 py-1 hover:bg-white/10"
-                >
+                <div className="w-32 text-right font-medium">{money(r.line, currency)}</div>
+                <button onClick={() => removeOne(r.slug)} className="rounded-lg border border-white/20 px-3 py-1 hover:bg-white/10">
                   Sil
                 </button>
               </div>
