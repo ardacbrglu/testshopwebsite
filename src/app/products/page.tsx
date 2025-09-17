@@ -10,21 +10,15 @@ type Product = {
   image: string;
   unitOriginal: number;
   unitFinal: number;
-  discountLabel: string | null;
+  discountLabel: string | null; // sadece preview açıkken dolu
   contracted: boolean;
   currency: string;
 };
 
-type StoredCartItem = { slug: string; quantity: number; caboRef?: string | null };
+type StoredCartItem = { slug: string; quantity: number };
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
-}
-
-function getCookie(name: string) {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
-  return m ? decodeURIComponent(m[2]) : null;
 }
 
 export default function ProductsPage() {
@@ -33,18 +27,21 @@ export default function ProductsPage() {
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/products", { cache: "no-store" })
+    const hasPreview = typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1";
+    fetch("/api/products", {
+      cache: "no-store",
+      headers: hasPreview ? { "x-cabo-preview": "1" } : undefined,
+    })
       .then((r) => r.json())
       .then((d) => setItems((d?.data ?? []) as Product[]));
   }, []);
 
   const addToCart = (p: Product) => {
-    const token = getCookie("caboRef") || getCookie("cabo_ref");
     const q = Math.max(1, Math.floor(qty[p.slug] || 1));
     const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
-    else cart.push({ slug: p.slug, quantity: q, caboRef: token || undefined });
+    else cart.push({ slug: p.slug, quantity: q });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
     setTimeout(() => setToast(null), 1600);
@@ -55,15 +52,16 @@ export default function ProductsPage() {
       <h1 className="text-2xl font-semibold mb-6">Ürünler</h1>
 
       {toast && (
-        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">
+        <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg backdrop-blur">
           {toast}
         </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {items.map((p) => (
-          <div key={p.slug} className="rounded-2xl border border-white/10 bg-black/30 p-4">
+          <div key={p.slug} className="rounded-2xl border border-white/10 bg-black/30 p-4 shadow hover:shadow-lg transition">
             <Link href={`/products/${p.slug}`}>
+              {/* demo için <img>; prod'da next/image önerilir */}
               <img src={p.image} alt={p.name} className="w-full h-48 object-cover rounded-xl mb-3" />
             </Link>
 
@@ -73,9 +71,7 @@ export default function ProductsPage() {
             <div className="flex items-center gap-2 mb-3">
               {p.discountLabel ? (
                 <>
-                  <span className="line-through text-white/40">
-                    {money(p.unitOriginal, p.currency)}
-                  </span>
+                  <span className="line-through text-white/40">{money(p.unitOriginal, p.currency)}</span>
                   <span className="font-semibold">{money(p.unitFinal, p.currency)}</span>
                   <span className="text-emerald-400 text-sm">({p.discountLabel})</span>
                 </>
@@ -90,9 +86,7 @@ export default function ProductsPage() {
                 min={1}
                 className="w-20 rounded-md border border-white/20 bg-black/40 px-2 py-1"
                 value={qty[p.slug] || 1}
-                onChange={(e) =>
-                  setQty((s) => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))
-                }
+                onChange={(e) => setQty((s) => ({ ...s, [p.slug]: Math.max(1, Math.floor(+e.target.value || 1)) }))}
               />
               <button onClick={() => addToCart(p)} className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10">
                 Sepete Ekle

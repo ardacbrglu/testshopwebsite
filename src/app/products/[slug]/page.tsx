@@ -15,26 +15,26 @@ type Product = {
   contracted: boolean;
 };
 
-type StoredCartItem = { slug: string; quantity: number; caboRef?: string | null };
+type StoredCartItem = { slug: string; quantity: number };
 
 function money(n: number, currency = "TRY") {
   return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n);
 }
-function getCookie(name: string) {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
-  return m ? decodeURIComponent(m[2]) : null;
-}
 
 export default function ProductDetail() {
-  const { slug } = useParams<{ slug: string }>();
+  const params = useParams<{ slug: string }>();
+  const slug = params?.slug;
   const [p, setP] = useState<Product | null>(null);
   const [q, setQ] = useState(1);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
-    fetch(`/api/products?slug=${encodeURIComponent(slug)}`, { cache: "no-store" })
+    const hasPreview = typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1";
+    fetch(`/api/products?slug=${encodeURIComponent(slug)}`, {
+      cache: "no-store",
+      headers: hasPreview ? { "x-cabo-preview": "1" } : undefined,
+    })
       .then((r) => r.json())
       .then((d) => setP((d?.data as Product) ?? null));
   }, [slug]);
@@ -42,11 +42,10 @@ export default function ProductDetail() {
   if (!p) return <div className="p-8">Yükleniyor…</div>;
 
   const add = () => {
-    const token = getCookie("caboRef") || getCookie("cabo_ref");
     const cart: StoredCartItem[] = JSON.parse(localStorage.getItem("cart") || "[]");
     const idx = cart.findIndex((c) => c.slug === p.slug);
     if (idx >= 0) cart[idx].quantity += q;
-    else cart.push({ slug: p.slug, quantity: q, caboRef: token || undefined });
+    else cart.push({ slug: p.slug, quantity: q });
     localStorage.setItem("cart", JSON.stringify(cart));
     setToast("Sepete eklendi");
     setTimeout(() => setToast(null), 1600);
@@ -57,8 +56,10 @@ export default function ProductDetail() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
       {toast && <div className="fixed top-6 right-6 z-50 rounded-lg bg-white/10 text-white px-4 py-2 shadow-lg">{toast}</div>}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <img src={p.image} alt={p.name} className="w-full h-72 object-cover rounded-2xl" />
+
         <div>
           <h1 className="text-2xl font-semibold mb-2">{p.name}</h1>
           <p className="text-white/70 mb-4">{p.description}</p>

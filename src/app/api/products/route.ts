@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 
 type CatalogItem = {
   slug: string;
@@ -14,9 +13,12 @@ type CatalogItem = {
 };
 
 const CATALOG: CatalogItem[] = [
-  { slug: "product-a", name: "Product A", description: "Hafif, günlük kullanıma uygun demo ürün.", image: "/img/a.jpg", price: 229.99, currency: "TRY", contracted: true,  productCode: "A001", discountPercent: 10 },
-  { slug: "product-b", name: "Product B", description: "Dayanıklı ve şık demo ürün.",                 image: "/img/b.jpg", price: 49999.99, currency: "TRY", contracted: true,  productCode: "B001", discountPercent: 50 },
-  { slug: "product-c", name: "Product C", description: "Kompakt boyut, yüksek performans.",            image: "/img/c.jpg", price: 1999.99,  currency: "TRY", contracted: false, productCode: "C000", discountPercent: 0  },
+  { slug: "product-a", name: "Product A", description: "Hafif, günlük kullanıma uygun demo ürün.", image: "/img/a.jpg", price: 229.99,   currency: "TRY", contracted: true,  productCode: "A001", discountPercent: 10 },
+  { slug: "product-b", name: "Product B", description: "Dayanıklı ve şık demo ürün.",               image: "/img/b.jpg", price: 50000.00, currency: "TRY", contracted: true,  productCode: "B001", discountPercent: 50 },
+  { slug: "product-c", name: "Product C", description: "Kompakt boyut, yüksek performans.",          image: "/img/c.jpg", price: 1999.99,  currency: "TRY", contracted: false, productCode: "C000", discountPercent: 0  },
+  { slug: "product-d", name: "Product D", description: "Pratik, taşınabilir demo ürün.",             image: "/img/d.jpg", price: 23750.00, currency: "TRY", contracted: true,  productCode: "D001", discountPercent: 5  },
+  { slug: "product-e", name: "Product E", description: "Günlük işlerin vazgeçilmezi.",               image: "/img/e.jpg", price: 34.99,    currency: "USD", contracted: true,  productCode: "E001", discountPercent: 0  },
+  { slug: "product-f", name: "Product F", description: "Uzun ömürlü, hesaplı çözüm.",                image: "/img/f.jpg", price: 100000.00,currency: "TRY", contracted: false, productCode: "F000", discountPercent: 0  },
 ];
 
 function priceWithDiscount(p: number, percent: number) {
@@ -42,13 +44,11 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const slug = url.searchParams.get("slug");
 
-  // 👇 ÖNEMLİ: cookies() artık Promise olabilir → await!
-  const store = await cookies();
-  const token = store.get("caboRef")?.value || store.get("cabo_ref")?.value || null;
+  // Sadece bu header varsa indirim etiketi göster
+  const preview = req.headers.get("x-cabo-preview") === "1";
 
   const decorate = (base: CatalogItem): ProductPayload => {
-    const hasRef = Boolean(token);
-    const percent = base.contracted && hasRef ? base.discountPercent || 0 : 0;
+    const percent = base.contracted && preview ? base.discountPercent || 0 : 0;
     const unitOriginal = base.price;
     const unitFinal = percent > 0 ? priceWithDiscount(unitOriginal, percent) : unitOriginal;
     const discountLabel = percent > 0 ? `-%${percent}` : null;
