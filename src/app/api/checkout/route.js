@@ -1,12 +1,12 @@
+// src/app/api/checkout/route.js
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 import crypto from "crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
 import { uid } from "@/lib/format";
-import { getBySlug, getProductCode } from "@/lib/db";
-
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+import { getBySlug } from "@/lib/db";
 
 const CABO_WEBHOOK_URL = process.env.CABO_WEBHOOK_URL;
 const KEY_ID = process.env.CABO_KEY_ID || "";
@@ -17,129 +17,126 @@ function sign(ts, raw) {
   return crypto.createHmac("sha256", HMAC_SECRET).update(`${ts}.${raw}`).digest("hex");
 }
 
+function isValidEmail(s) {
+  return typeof s === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
 export async function POST(req) {
+  // Bu route hiçbir durumda 500 dökmemeli; anlamlı hata kodları dönüyor.
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const items = Array.isArray(body?.items) ? body.items : [];
-    const email = (body?.email || "").toString().trim().toLowerCase();
+    const email = body?.email;
 
     if (!items.length) {
       return NextResponse.json({ ok: false, error: "empty_cart" }, { status: 400 });
     }
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmail(email)) {
       return NextResponse.json({ ok: false, error: "invalid_email" }, { status: 400 });
     }
 
     const c = await cookies();
-    const hasRef = Boolean(c.get("cabo_ref") || c.get("caboRef"));
-    const caboRef = c.get("cabo_ref")?.value || c.get("caboRef")?.value || null;
+    const caboRef =
+      c.get("cabo_ref")?.value || c.get("caboRef")?.value || null;
+    const hasRef = Boolean(caboRef);
 
+    // Müşterinin gördüğü fiyata göre normalize (ref varsa indirimli)
     const normalized = items
       .map((it) => {
-        const p = getBySlug(it.slug, hasRef); // <<< indirim yalnız ref varsa
-        const qty = Math.max(1, Math.floor(it.quantity || 1));
+        const p = getBySlug(it.slug, hasRef);
         if (!p) return null;
-        const unit = p.unitFinal ?? p.price;
+        const qty = Math.max(1, Math.floor(it.quantity || 1));
+        const unit = p.unitFinal ?? p.unitOriginal;
         return {
-          letter: p.id,
           slug: p.slug,
           name: p.name,
           quantity: qty,
           unitPrice: unit,
           contracted: p.contracted,
-          productCode: getProductCode(p.id),
+          productCode: p.productCode,
           lineTotal: Math.round(unit * qty * 100) / 100,
         };
       })
       .filter(Boolean);
 
-    const contractedItems = normalized.filter(
-      (n) => n.contracted && (!REQUIRE_PRODUCT_CODE || n.productCode)
-    );
-
     const orderTotal = normalized.reduce((s, n) => s + n.lineTotal, 0);
     const orderNumber = uid("ORD");
 
-    // --- 1) DB: user + order + items
-    const user = await prisma.user.upsert({
-      where: { email },
-      update: {},
-      create: { email },
-      select: { id: true },
-    });
+    // Cabo post (yalnızca ref varsa ve kontratlı ürün varsa)
+    let caboResponse = { skipped: true, reason: "no_ref_or_no_items" };
+    const contractedItems = normalized.filter(
+      (n) => hasRef && n.contracted && (!REQUIRE_PRODUCT_CODE || n.productCode)
+    );
 
-    await prisma.order.create({
-      data: {
-        orderNumber,
-        status: "confirmed",
-        caboRef: caboRef || null,
-        currency: "TRY",
-        totalAmount: Math.round(orderTotal * 100), // kuruş
-        userId: user.id,
-        items: {
-          create: normalized.map((n) => ({
-            productName: n.name,
+    if (
+      hasRef &&
+      contractedItems.length > 0 &&
+      CABO_WEBHOOK_URL &&
+      KEY_ID &&
+      HMAC_SECRET
+    ) {
+      try {
+        const payload = {
+          orderNumber,
+          caboRef,
+          customerEmail: email, // bilgi amaçlı (platform tarafında opsiyonel)
+          items: contractedItems.map((n) => ({
+            productCode: n.productCode || undefined,
             productSlug: n.slug,
             quantity: n.quantity,
-            unitPriceAtPurchase: Math.round(n.unitPrice * 100),
-            lineTotal: Math.round(n.lineTotal * 100),
+            unitPriceCharged: n.unitPrice,
+            lineTotal: n.lineTotal,
           })),
-        },
-      },
-    });
+        };
 
-    // --- 2) Cabo S2S webhook (varsa sözleşmeli ürün)
-    let caboResponse = null;
-    if (contractedItems.length > 0 && CABO_WEBHOOK_URL && KEY_ID && HMAC_SECRET) {
-      const payload = {
-        orderNumber,
-        caboRef,
-        items: contractedItems.map((n) => ({
-          productCode: n.productCode || undefined,
-          productSlug: n.slug,
-          quantity: n.quantity,
-          unitPriceCharged: n.unitPrice,
-          lineTotal: n.lineTotal,
-        })),
-      };
+        const raw = JSON.stringify(payload);
+        const ts = Math.floor(Date.now() / 1000).toString();
+        const sig = sign(ts, raw);
 
-      const raw = JSON.stringify(payload);
-      const ts = Math.floor(Date.now() / 1000).toString();
-      const sig = sign(ts, raw);
+        const res = await fetch(CABO_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cabo-Key-Id": KEY_ID,
+            "X-Key-Id": KEY_ID,
+            "X-Cabo-Timestamp": ts,
+            "X-Timestamp": ts,
+            "X-Cabo-Signature": sig,
+            "X-Signature": sig,
+          },
+          body: raw,
+          cache: "no-store",
+        });
 
-      const res = await fetch(CABO_WEBHOOK_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Cabo-Key-Id": KEY_ID,
-          "X-Key-Id": KEY_ID,
-          "X-Cabo-Timestamp": ts,
-          "X-Timestamp": ts,
-          "X-Cabo-Signature": sig,
-          "X-Signature": sig,
-        },
-        body: raw,
-        cache: "no-store",
-      });
-
-      const text = await res.text();
-      let parsed;
-      try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
-      caboResponse = { status: res.status, data: parsed };
+        const text = await res.text();
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = { raw: text };
+        }
+        caboResponse = { status: res.status, data: parsed };
+      } catch (err) {
+        caboResponse = { error: "webhook_failed", message: String(err?.message || err) };
+      }
     }
 
-    return NextResponse.json({
-      ok: true,
-      orderNumber,
-      summary: {
-        total: Math.round(orderTotal * 100) / 100,
-        itemCount: normalized.reduce((s, n) => s + n.quantity, 0),
+    // Başarıyı döndür (localStorage sipariş kaydı client’ta)
+    return NextResponse.json(
+      {
+        ok: true,
+        orderNumber,
+        summary: {
+          total: Math.round(orderTotal * 100) / 100,
+          itemCount: normalized.reduce((s, n) => s + n.quantity, 0),
+          email,
+        },
+        cabo: caboResponse,
       },
-      cabo: caboResponse || { skipped: true, reason: "no_contracted_items_or_missing_env" },
-    }, { headers: { "Cache-Control": "no-store" } });
-
-  } catch (e) {
-    console.error("checkout error:", e);
-    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch {
+    // yakalanmayan bir şey olursa yine de kontrollü hata
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 400 });
   }
 }
