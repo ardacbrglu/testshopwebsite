@@ -12,25 +12,52 @@ function verify(value, secret) {
   try { return JSON.parse(payload); } catch { return null; }
 }
 
+function parseMap() {
+  try {
+    // CABO_MAP_JSON bir JSON string; içindeki % işaretlerini temizleyeceğiz
+    const raw = process.env.CABO_MAP_JSON || "{}";
+    const obj = JSON.parse(raw);
+    const map = {};
+    for (const [slug, val] of Object.entries(obj)) {
+      const pctStr = (val?.discount || "0").toString().trim().replace("%", "");
+      const pct = Math.max(0, Math.min(90, parseInt(pctStr, 10) || 0));
+      map[slug] = { code: val?.code || "", pct };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 export function getAttribution() {
-  const value = cookies().get("cabo_attrib")?.value;
-  const secret = process.env.TESTSHOP_COOKIE_SECRET || "dev-secret";
-  const obj = verify(value, secret);
+  const c = cookies().get("cabo_attrib")?.value;
+  const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
+  const obj = verify(c, secret);
   if (!obj) return null;
-  if (Date.now() - (obj.ts || 0) > 14 * 24 * 60 * 60 * 1000) return null;
-  return obj; // {ref,lid,scope,product,discountPct}
+  const ttlDays = parseInt(process.env.CABO_COOKIE_TTL_DAYS || "14", 10);
+  if (Date.now() - (obj.ts || 0) > ttlDays * 24 * 60 * 60 * 1000) return null;
+  return obj; // {ref,lid,scope,landingProduct,...}
 }
 
 export function calcDiscountedUnitPrice(kurus, attrib, productSlug) {
   if (!attrib) return { finalPrice: kurus, applied: false, discountPct: 0 };
 
+  const map = parseMap();
+  const entry = map[productSlug];
+  if (!entry) return { finalPrice: kurus, applied: false, discountPct: 0 };
+
   const eligible =
     attrib.scope === "sitewide" ||
-    (attrib.scope === "single" && attrib.product && attrib.product === productSlug);
+    (attrib.scope === "landing" && attrib.landingProduct && attrib.landingProduct === productSlug);
 
-  const pct = Math.max(0, Math.min(90, parseInt(attrib.discountPct || "0", 10)));
-  if (!eligible || pct === 0) return { finalPrice: kurus, applied: false, discountPct: 0 };
+  if (!eligible || !entry.pct) return { finalPrice: kurus, applied: false, discountPct: 0 };
 
-  const finalPrice = Math.floor((kurus * (100 - pct)) / 100);
-  return { finalPrice, applied: finalPrice < kurus, discountPct: pct };
+  const finalPrice = Math.floor((kurus * (100 - entry.pct)) / 100);
+  return { finalPrice, applied: finalPrice < kurus, discountPct: entry.pct };
+}
+
+// İsteğe bağlı: map'i dışarı ver (checkout'ta code doğrulamak için)
+export function getProductCodeFromMap(slug) {
+  const map = parseMap();
+  return map[slug]?.code || "";
 }

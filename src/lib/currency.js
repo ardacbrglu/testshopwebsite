@@ -1,6 +1,6 @@
 // src/lib/currency.js
 export function tryFromKurus(kurus) {
-  const n = (Number(kurus || 0) / 100);
+  const n = Number(kurus || 0) / 100;
   return n.toLocaleString("tr-TR", {
     style: "currency",
     currency: "TRY",
