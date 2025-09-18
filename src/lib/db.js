@@ -1,19 +1,34 @@
 // src/lib/db.js
-import mysql from "mysql2/promise";
+// Sadece server ortamında kullanılmalı
+import mysql from "mysql2/promise.js"; // <-- .js eki kritik olabilir
 
 let pool;
+
+/**
+ * DATABASE_URL örn:
+ * mysql://root:PASS@caboose.proxy.rlwy.net:19502/railway
+ */
 export function getPool() {
   if (!pool) {
-    const u = new URL(process.env.DATABASE_URL);
+    const url = new URL(process.env.DATABASE_URL);
+    const sslNeeded =
+      (process.env.MYSQL_SSL || "").toLowerCase() === "1" ||
+      url.hostname.endsWith("railway.app") ||
+      url.hostname.includes("aws") ||
+      url.hostname.includes("gcp");
+
     pool = mysql.createPool({
-      host: u.hostname,
-      port: Number(u.port || 3306),
-      user: decodeURIComponent(u.username),
-      password: decodeURIComponent(u.password),
-      database: u.pathname.slice(1),
-      connectionLimit: Number(u.searchParams.get("connectionLimit") || "10"),
+      host: url.hostname,
+      port: url.port ? Number(url.port) : 3306,
+      user: decodeURIComponent(url.username || ""),
+      password: decodeURIComponent(url.password || ""),
+      database: (url.pathname || "").replace(/^\//, ""),
+      waitForConnections: true,
+      connectionLimit: 10,
+      namedPlaceholders: true,
+      decimalNumbers: true,
       timezone: "Z",
-      supportBigNumbers: true
+      ...(sslNeeded ? { ssl: { rejectUnauthorized: true } } : {}),
     });
   }
   return pool;
