@@ -1,99 +1,122 @@
 // src/app/cart/page.tsx
 import { query } from "@/lib/db";
 import { getCartIdOptional } from "@/lib/cart";
-import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 
-type Row = { cart_item_id:number; product_id:number; slug:string; name:string; price:number; imageUrl:string; quantity:number; };
-function fmtTRY(k:number){ const n=Number(k||0)/100; return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
-export const dynamic = "force-dynamic";
+function fmtTRY(k:number){ const n=(Number(k||0)/100); return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
 
-export default async function CartPage() {
+export default async function CartPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = await searchParams;
+
   const cartId = await getCartIdOptional();
-  let items: Row[] = [];
-  let email: string | null = null;
+  let email: string|null = null;
+  let items: any[] = [];
 
   if (cartId) {
-    items = (await query(
-      `SELECT ci.id as cart_item_id, ci.product_id, p.slug, p.name, p.price, p.imageUrl, ci.quantity
+    const row = await query("SELECT email FROM carts WHERE id=? LIMIT 1", [cartId]);
+    email = row[0]?.email || null;
+    items = await query(
+      `SELECT ci.id AS cart_item_id, ci.quantity, p.id AS product_id, p.slug, p.name, p.price, p.imageUrl
        FROM cart_items ci JOIN products p ON p.id=ci.product_id
-       WHERE ci.cart_id=? ORDER BY ci.id DESC`, [cartId]
-    )) as Row[];
-    const r = await query("SELECT email FROM carts WHERE id=? LIMIT 1", [cartId]);
-    email = (r[0]?.email as string) || null;
+       WHERE ci.cart_id=?
+       ORDER BY ci.id DESC`, [cartId]
+    ) as any[];
   }
 
-  const attrib = await getAttribution();
-  let sub=0, subAfter=0, discTotal=0;
-  const hydrated = items.map(it=>{
-    const d = calcDiscountedUnitPrice(it.price, attrib, it.slug);
-    const line = it.price*it.quantity, after = d.finalPrice*it.quantity;
-    sub += line; subAfter += after; discTotal += (line-after);
-    return {...it, unit_after:d.finalPrice, pct:d.discountPct};
-  });
+  const haveItems = items.length > 0;
+  const subtotal = items.reduce((s,i)=> s + Number(i.price)*Number(i.quantity), 0);
 
-  const canCheckout = !!email && hydrated.length>0;
+  // ---- Toast mesajını sayfa yüklenince gönder
+  const toastScript = (() => {
+    const map:any = {
+      added: "Sepete eklendi.",
+      updated: "Adet güncellendi.",
+      removed: "Ürün sepetten silindi.",
+      cleared: "Sepet temizlendi.",
+      email: "E-posta kaydedildi.",
+      "invalid_email": "Geçersiz e-posta adresi.",
+    };
+    const key = ["added","updated","removed","cleared","email","invalid_email"].find(k => sp?.[k]);
+    if (!key) return "";
+    const text = map[key];
+    return `
+      window.addEventListener("load",()=> {
+        window.dispatchEvent(new CustomEvent("toast",{ detail:{ type:"success", text:${JSON.stringify(text)} } }));
+        const url=new URL(location.href); url.searchParams.delete("${key}");
+        history.replaceState(null,"",url.toString());
+      });
+    `;
+  })();
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
-      <h1 className="text-2xl font-semibold mb-4">Sepet</h1>
+      <h1 className="text-2xl font-semibold mb-6">Sepetim</h1>
 
-      {hydrated.length===0 ? <p>Sepet boş.</p> : (
+      {!haveItems && <div className="text-neutral-400">Sepet boş.</div>}
+
+      {haveItems && (
         <div className="space-y-4">
-          {hydrated.map(it=>(
-            <div key={it.cart_item_id} className="flex items-center gap-3 border border-neutral-800 rounded-xl p-3">
-              <img src={it.imageUrl} className="w-16 h-16 object-cover rounded-lg" alt="" />
+          {items.map(it=>(
+            <div key={it.cart_item_id} className="flex items-center gap-4 p-4 rounded-xl bg-neutral-900 border border-neutral-800">
+              <img src={it.imageUrl} alt={it.name} className="w-24 h-24 object-cover rounded-lg" />
               <div className="flex-1">
                 <div className="font-medium">{it.name}</div>
-                <div className="text-sm text-neutral-400">{it.slug}</div>
-                {it.pct>0 ? (
-                  <div className="text-sm">
-                    <span className="text-green-400">−{it.pct}%</span>{" "}
-                    <span className="line-through text-neutral-500 mr-1">{fmtTRY(it.price)}</span>
-                    <b>{fmtTRY(it.unit_after)}</b>
-                  </div>
-                ) : <div className="text-sm">{fmtTRY(it.price)}</div>}
+                <div className="text-neutral-400">{fmtTRY(it.price)}</div>
               </div>
 
               <form action="/api/cart" method="post" className="flex items-center gap-2">
                 <input type="hidden" name="action" value="update" />
-                <input type="hidden" name="cart_item_id" value={it.cart_item_id} />
-                <input name="qty" type="number" min={1} defaultValue={it.quantity}
+                <input type="hidden" name="cart_item_id" value={String(it.cart_item_id)} />
+                <input name="qty" type="number" min={1} defaultValue={String(it.quantity)}
                        className="bg-neutral-900 border border-neutral-800 rounded-xl px-2 py-1 w-20" />
-                <button className="text-sm px-2 py-1 rounded bg-neutral-800">Güncelle</button>
+                <button type="submit" className="px-3 py-2 rounded-xl bg-white text-black text-sm cursor-pointer hover:opacity-90">
+                  Güncelle
+                </button>
               </form>
 
               <form action="/api/cart" method="post">
                 <input type="hidden" name="action" value="remove" />
-                <input type="hidden" name="cart_item_id" value={it.cart_item_id} />
-                <button className="text-sm px-2 py-1 rounded bg-red-600">Sil</button>
+                <input type="hidden" name="cart_item_id" value={String(it.cart_item_id)} />
+                <button type="submit" className="px-3 py-2 rounded-xl bg-red-600 text-white text-sm cursor-pointer hover:opacity-90">
+                  Sil
+                </button>
               </form>
             </div>
           ))}
 
-          <div className="border border-neutral-800 rounded-xl p-4">
-            <div className="flex justify-between"><span>Ara toplam</span><b>{fmtTRY(sub)}</b></div>
-            {discTotal>0 && <div className="flex justify-between text-green-400"><span>İndirim</span><b>−{fmtTRY(discTotal)}</b></div>}
-            <div className="flex justify-between mt-1 text-lg"><span>Genel toplam</span><b>{fmtTRY(subAfter)}</b></div>
-          </div>
-
-          <div className="border border-neutral-800 rounded-xl p-4 space-y-3">
-            <form action="/api/cart" method="post" className="flex items-center gap-3">
-              <input type="hidden" name="action" value="set-email" />
-              <input name="email" type="email" placeholder="E-posta adresiniz"
-                     defaultValue={email || ""} className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 flex-1" />
-              <button className="px-3 py-2 rounded-xl bg-neutral-800">Kaydet</button>
-            </form>
-
-            <form action="/api/checkout" method="post">
-              <input type="hidden" name="fromCart" value="1" />
-              <button className={`px-4 py-2 rounded-xl ${canCheckout?'bg-white text-black':'bg-neutral-800 text-neutral-500 cursor-not-allowed'}`} disabled={!canCheckout}>
-                Satın al
+          <div className="flex justify-between items-center mt-4">
+            <form action="/api/cart" method="post">
+              <input type="hidden" name="action" value="clear" />
+              <button type="submit" className="px-3 py-2 rounded-xl bg-neutral-800 text-white text-sm cursor-pointer hover:bg-neutral-700">
+                Sepeti temizle
               </button>
             </form>
-            {!email && <p className="text-sm text-yellow-400">Satın almak için önce e-posta girin.</p>}
+            <div className="text-lg">Ara toplam: <b>{fmtTRY(subtotal)}</b></div>
           </div>
+
+          <div className="mt-6 p-4 rounded-xl bg-neutral-900 border border-neutral-800">
+            <div className="font-medium mb-2">E-posta</div>
+            <form action="/api/cart" method="post" className="flex items-center gap-2">
+              <input type="hidden" name="action" value="set-email" />
+              <input name="email" defaultValue={email ?? ""} placeholder="ornek@eposta.com"
+                     className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2" />
+              <button type="submit" className="px-3 py-2 rounded-xl bg-white text-black text-sm cursor-pointer hover:opacity-90">
+                Kaydet
+              </button>
+            </form>
+          </div>
+
+          <form action="/api/checkout" method="post" className="mt-6">
+            <input type="hidden" name="fromCart" value="1" />
+            <button type="submit" className="px-4 py-3 rounded-xl bg-green-500 text-black font-medium cursor-pointer hover:opacity-90 disabled:opacity-40"
+                    disabled={!email || !haveItems}>
+              Satın al
+            </button>
+            {!email && <div className="text-sm text-red-400 mt-2">Satın almak için önce e-posta giriniz.</div>}
+          </form>
         </div>
       )}
+
+      {toastScript && <script dangerouslySetInnerHTML={{ __html: toastScript }} />}
     </main>
   );
 }

@@ -40,17 +40,15 @@ export async function POST(req: Request) {
     const action = (form.get("action") || "add").toString();
     const { id: cartId } = await getOrCreateCart();
 
-    // ---- e-posta bağla
     if (action === "set-email") {
       const email = (form.get("email") || "").toString().trim();
       if (!email || !isEmail(email)) {
         return NextResponse.redirect(absoluteFromReq(req, "/cart?err=invalid_email"));
       }
       await attachEmailToCart(cartId, email);
-      return NextResponse.redirect(absoluteFromReq(req, "/cart?ok=1"));
+      return NextResponse.redirect(absoluteFromReq(req, "/cart?email=1"));
     }
 
-    // ---- sepete ekle
     if (action === "add") {
       const slug = (form.get("slug") || "").toString().trim();
       const qty  = parseIntSafe(form.get("qty"), 1, 1);
@@ -66,30 +64,27 @@ export async function POST(req: Request) {
       } else {
         await query("INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?,?,?)", [cartId, pid, qty]);
       }
-      return NextResponse.redirect(absoluteFromReq(req, "/cart"));
+      return NextResponse.redirect(absoluteFromReq(req, "/cart?added=1"));
     }
 
-    // ---- güncelle
     if (action === "update") {
       const itemId = parseIntSafe(form.get("cart_item_id"), 0, 1);
       const qty    = parseIntSafe(form.get("qty"), 1, 1);
       if (!itemId) return NextResponse.redirect(absoluteFromReq(req, "/cart?err=missing_item"));
       await query("UPDATE cart_items SET quantity=? WHERE id=? AND cart_id=?", [qty, itemId, cartId]);
-      return NextResponse.redirect(absoluteFromReq(req, "/cart"));
+      return NextResponse.redirect(absoluteFromReq(req, "/cart?updated=1"));
     }
 
-    // ---- sil
     if (action === "remove") {
       const itemId = parseIntSafe(form.get("cart_item_id"), 0, 1);
       if (!itemId) return NextResponse.redirect(absoluteFromReq(req, "/cart?err=missing_item"));
       await query("DELETE FROM cart_items WHERE id=? AND cart_id=?", [itemId, cartId]);
-      return NextResponse.redirect(absoluteFromReq(req, "/cart"));
+      return NextResponse.redirect(absoluteFromReq(req, "/cart?removed=1"));
     }
 
-    // ---- temizle
     if (action === "clear") {
       await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
-      return NextResponse.redirect(absoluteFromReq(req, "/cart"));
+      return NextResponse.redirect(absoluteFromReq(req, "/cart?cleared=1"));
     }
 
     return NextResponse.redirect(absoluteFromReq(req, "/cart?err=unknown_action"));

@@ -67,7 +67,6 @@ export async function POST(req) {
       );
     }
 
-    // indirim uygulanmışsa Cabo S2S
     if (discountTotal > 0 && attrib) {
       const payload = {
         version: 1,
@@ -101,6 +100,8 @@ export async function POST(req) {
     }
 
     await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
+
+    // orders sayfasında toast için flag
     return NextResponse.redirect(absoluteFromReq(req, `/orders?ok=1&ord=${orderNumber}`));
   } catch (e) {
     return NextResponse.json({ ok:false, error: (e?.message || "server-error") }, { status:500 });
