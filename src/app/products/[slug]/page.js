@@ -1,7 +1,8 @@
+// src/app/products/[slug]/page.js
 import { notFound } from "next/navigation";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
-import { tryFromKurus } from "@/lib/currency";
+import PriceBlock from "@/components/PriceBlock";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +13,11 @@ export default async function ProductDetail({ params }) {
     [slug]
   );
   if (!rows.length || !rows[0].isActive) return notFound();
-
   const p = rows[0];
-  const attrib = await getAttribution();   // ⬅️ async oldu
+
+  const attrib = await getAttribution(); // ⬅️ async
   const d = calcDiscountedUnitPrice(p.price, attrib, p.slug);
+  const qtyId = "qty-input";
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
@@ -25,23 +27,19 @@ export default async function ProductDetail({ params }) {
           <h1 className="text-2xl font-semibold mb-2">{p.name}</h1>
           <p className="text-neutral-400 mb-6">{p.description}</p>
 
-          {d.applied ? (
-            <>
-              <div className="text-sm text-green-400 mb-1">Ref indirimi −{d.discountPct}%</div>
-              <div className="text-2xl mb-4">
-                <span className="line-through text-neutral-500 mr-3">{tryFromKurus(p.price)}</span>
-                <span className="font-bold">{tryFromKurus(d.finalPrice)}</span>
-              </div>
-            </>
-          ) : (
-            <div className="text-2xl mb-4">{tryFromKurus(p.price)}</div>
-          )}
+          <PriceBlock
+            unitPrice={p.price}
+            unitDiscounted={d.finalPrice}
+            discountPct={d.discountPct}
+            qtyInputId={qtyId}
+          />
 
-          <form action={`/api/checkout`} method="post">
+          <form action={`/api/checkout`} method="post" className="mt-4">
             <input type="hidden" name="slug" value={p.slug} />
             <div className="flex items-center gap-3 mb-4">
-              <label className="text-sm">Adet</label>
+              <label className="text-sm" htmlFor={qtyId}>Adet</label>
               <input
+                id={qtyId}
                 name="qty"
                 type="number"
                 min="1"

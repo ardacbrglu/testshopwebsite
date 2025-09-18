@@ -2,7 +2,6 @@
 import { cookies } from "next/headers";
 import { createHmac } from "crypto";
 
-/* ----- helpers ----- */
 function verifyCookie(value, secret) {
   if (!value) return null;
   const [b64, sig] = value.split(".");
@@ -30,16 +29,14 @@ function readMap() {
   }
 }
 
-/* ----- public API (ASYNC!) ----- */
 export async function getAttribution() {
-  // ⬇️ Next 15: cookies() async
-  const v = (await cookies()).get("cabo_attrib")?.value;
+  const v = (await cookies()).get("cabo_attrib")?.value; // Next 15: async
   const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
   const obj = verifyCookie(v, secret);
   if (!obj) return null;
   const ttlDays = parseInt(process.env.CABO_COOKIE_TTL_DAYS || "14", 10);
-  if (Date.now() - (obj.ts || 0) > ttlDays * 24 * 60 * 60 * 1000) return null;
-  return obj; // {ref,lid,scope,landingProduct,ts}
+  if (Date.now() - (obj.ts || 0) > ttlDays * 86400 * 1000) return null;
+  return obj; // {ref,lid,scope,landingProduct}
 }
 
 export function resolveDiscountPct(productSlug, attrib) {

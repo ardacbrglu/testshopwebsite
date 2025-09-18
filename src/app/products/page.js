@@ -1,7 +1,12 @@
+// src/app/products/page.js
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
-import { tryFromKurus } from "@/lib/currency";
 import Link from "next/link";
+
+function fmtTRY(kurus) {
+  const n = Number(kurus || 0) / 100;
+  return n.toLocaleString("tr-TR", { style: "currency", currency: "TRY", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +14,7 @@ export default async function ProductsPage() {
   const products = await query(
     "SELECT id, slug, name, description, price, imageUrl, isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC"
   );
-  const attrib = await getAttribution();   // ⬅️ async oldu
+  const attrib = await getAttribution(); // ⬅️ async
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
@@ -27,12 +32,12 @@ export default async function ProductsPage() {
                 <div className="mb-3">
                   <div className="text-sm text-green-400">Ref indirimi −{d.discountPct}%</div>
                   <div className="text-lg">
-                    <span className="line-through text-neutral-500 mr-2">{tryFromKurus(p.price)}</span>
-                    <span className="font-semibold">{tryFromKurus(d.finalPrice)}</span>
+                    <span className="line-through text-neutral-500 mr-2">{fmtTRY(p.price)}</span>
+                    <span className="font-semibold">{fmtTRY(d.finalPrice)}</span>
                   </div>
                 </div>
               ) : (
-                <div className="text-lg mb-3">{tryFromKurus(p.price)}</div>
+                <div className="text-lg mb-3">{fmtTRY(p.price)}</div>
               )}
 
               <div className="flex gap-2">

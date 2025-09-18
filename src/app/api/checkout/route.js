@@ -36,7 +36,7 @@ export async function POST(req) {
       return NextResponse.json({ ok: false, error: "product not found" }, { status: 404 });
     }
 
-    const attrib = getAttribution();
+    const attrib = await getAttribution(); // ⬅️ async
     const disc = calcDiscountedUnitPrice(product.price, attrib, product.slug);
 
     const unit = product.price;              // kuruş
@@ -47,7 +47,7 @@ export async function POST(req) {
     const lineAfter = unitAfter * quantity;
     const discountTotal = line - lineAfter;
 
-    // siparişi yaz
+    // sipariş
     const orderNumber = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
     const ins = await query(
       "INSERT INTO orders (order_number, total_amount, discount_total) VALUES (?,?,?)",
@@ -62,18 +62,12 @@ export async function POST(req) {
       [orderId, product.id, product.slug, product.name, product.product_code, quantity, unit, unitAfter]
     );
 
-    // İndirim yoksa Cabo'ya POST yok (senin kuralın)
+    // indirim yoksa post yok (kuralın)
     if (!disc.applied || discountTotal <= 0 || !attrib) {
       return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
     }
 
-    // (Opsiyonel) map code ile DB code uyuşuyor mu?
-    const mapCode = getProductCodeFromMap(product.slug);
-    if (mapCode && mapCode !== product.product_code) {
-      // burada sadece savunma: uyuşmasa da DB'deki code'u gönderiyoruz
-    }
-
-    // ---- Cabo POST ----
+    // Cabo POST
     const item = {
       productCode: product.product_code,
       productSlug: product.slug,
