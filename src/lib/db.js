@@ -4,8 +4,7 @@ import mysql from "mysql2/promise";
 let pool;
 export function getPool() {
   if (!pool) {
-    const url = process.env.DATABASE_URL;
-    const u = new URL(url);
+    const u = new URL(process.env.DATABASE_URL);
     pool = mysql.createPool({
       host: u.hostname,
       port: Number(u.port || 3306),

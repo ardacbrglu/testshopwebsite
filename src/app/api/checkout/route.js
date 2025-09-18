@@ -21,7 +21,7 @@ function parseForm(body) {
   return { slug, qty };
 }
 
-function hmac(ts, raw, key) {
+function signHmac(ts, raw, key) {
   return createHmac("sha256", key).update(`${ts}.${raw}`).digest("hex");
 }
 
@@ -39,15 +39,15 @@ export async function POST(req) {
     const attrib = getAttribution();
     const disc = calcDiscountedUnitPrice(product.price, attrib, product.slug);
 
-    const unit = product.price;            // kuruş
-    const unitAfter = disc.finalPrice;     // kuruş
-    const quantity = qty;
+    const unit = product.price;              // kuruş
+    const unitAfter = disc.finalPrice;       // kuruş
+    const quantity = Math.max(1, qty);
 
     const line = unit * quantity;
     const lineAfter = unitAfter * quantity;
     const discountTotal = line - lineAfter;
 
-    // Sipariş kaydı
+    // siparişi yaz
     const orderNumber = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
     const ins = await query(
       "INSERT INTO orders (order_number, total_amount, discount_total) VALUES (?,?,?)",
@@ -62,19 +62,19 @@ export async function POST(req) {
       [orderId, product.id, product.slug, product.name, product.product_code, quantity, unit, unitAfter]
     );
 
-    // İndirim yoksa Cabo'ya bildirim gönderme (senin kuralın)
+    // İndirim yoksa Cabo'ya POST yok (senin kuralın)
     if (!disc.applied || discountTotal <= 0 || !attrib) {
       return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
     }
 
-    // Map'teki product_code ile DB'deki eşleşiyor mu? (savunma amaçlı)
+    // (Opsiyonel) map code ile DB code uyuşuyor mu?
     const mapCode = getProductCodeFromMap(product.slug);
     if (mapCode && mapCode !== product.product_code) {
-      // İstersen burada "code mismatch" log'u atabilirsin
+      // burada sadece savunma: uyuşmasa da DB'deki code'u gönderiyoruz
     }
 
-    // ---- Cabo'ya satış bildirimi ----
-    const payloadItem = {
+    // ---- Cabo POST ----
+    const item = {
       productCode: product.product_code,
       productSlug: product.slug,
       name: product.name,
@@ -82,9 +82,8 @@ export async function POST(req) {
       unitPrice: unit,
       unitPriceAfterDiscount: unitAfter
     };
-
     if ((process.env.CABO_USE_PRODUCT_IDS || "0") === "1") {
-      payloadItem.productId = String(product.id);
+      item.productId = String(product.id);
     }
 
     const payload = {
@@ -93,10 +92,10 @@ export async function POST(req) {
       order: {
         orderId: String(orderId),
         orderNumber,
-        totalAmount: lineAfter,   // kuruş
-        discountTotal,            // kuruş
+        totalAmount: lineAfter,
+        discountTotal,
         createdAt: new Date().toISOString(),
-        items: [payloadItem]
+        items: [item]
       },
       referral: {
         token: attrib.ref,
@@ -109,7 +108,7 @@ export async function POST(req) {
     const ts = Math.floor(Date.now() / 1000).toString();
     const key = process.env.CABO_HMAC_SECRET;
     const keyId = process.env.CABO_KEY_ID;
-    const sig = hmac(ts, raw, key);
+    const sig = signHmac(ts, raw, key);
 
     await fetch(process.env.CABO_WEBHOOK_URL, {
       method: "POST",

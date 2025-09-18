@@ -7,7 +7,6 @@ import Link from "next/link";
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
-  // Tüm aktif ürünleri getir
   const products = await query(
     "SELECT id, slug, name, description, price, imageUrl, isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC"
   );

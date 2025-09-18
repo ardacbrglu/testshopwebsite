@@ -1,7 +1,6 @@
 // src/app/orders/page.js
 import { query } from "@/lib/db";
 import { tryFromKurus } from "@/lib/currency";
-
 export const dynamic = "force-dynamic";
 
 export default async function Orders() {

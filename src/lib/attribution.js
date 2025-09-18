@@ -2,7 +2,7 @@
 import { cookies } from "next/headers";
 import { createHmac } from "crypto";
 
-function verify(value, secret) {
+function verifyCookie(value, secret) {
   if (!value) return null;
   const [b64, sig] = value.split(".");
   if (!b64 || !sig) return null;
@@ -12,14 +12,15 @@ function verify(value, secret) {
   try { return JSON.parse(payload); } catch { return null; }
 }
 
-function parseMap() {
+function readMap() {
   try {
-    // CABO_MAP_JSON bir JSON string; içindeki % işaretlerini temizleyeceğiz
-    const raw = process.env.CABO_MAP_JSON || "{}";
+    let raw = process.env.CABO_MAP_JSON || "{}";
+    // Çok satırlı/bozuk JSON'u normalize et
+    raw = raw.replace(/\r?\n/g, "").replace(/\s{2,}/g, " ");
     const obj = JSON.parse(raw);
     const map = {};
     for (const [slug, val] of Object.entries(obj)) {
-      const pctStr = (val?.discount || "0").toString().trim().replace("%", "");
+      const pctStr = String(val?.discount ?? "0").trim().replace("%", "");
       const pct = Math.max(0, Math.min(90, parseInt(pctStr, 10) || 0));
       map[slug] = { code: val?.code || "", pct };
     }
@@ -30,34 +31,36 @@ function parseMap() {
 }
 
 export function getAttribution() {
-  const c = cookies().get("cabo_attrib")?.value;
   const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
-  const obj = verify(c, secret);
+  const v = cookies().get("cabo_attrib")?.value;
+  const obj = verifyCookie(v, secret);
   if (!obj) return null;
   const ttlDays = parseInt(process.env.CABO_COOKIE_TTL_DAYS || "14", 10);
   if (Date.now() - (obj.ts || 0) > ttlDays * 24 * 60 * 60 * 1000) return null;
-  return obj; // {ref,lid,scope,landingProduct,...}
+  return obj; // {ref,lid,scope,landingProduct,ts}
 }
 
-export function calcDiscountedUnitPrice(kurus, attrib, productSlug) {
-  if (!attrib) return { finalPrice: kurus, applied: false, discountPct: 0 };
-
-  const map = parseMap();
+export function resolveDiscountPct(productSlug, attrib) {
+  if (!attrib) return 0;
+  const map = readMap();
   const entry = map[productSlug];
-  if (!entry) return { finalPrice: kurus, applied: false, discountPct: 0 };
+  if (!entry) return 0;
 
   const eligible =
     attrib.scope === "sitewide" ||
     (attrib.scope === "landing" && attrib.landingProduct && attrib.landingProduct === productSlug);
 
-  if (!eligible || !entry.pct) return { finalPrice: kurus, applied: false, discountPct: 0 };
-
-  const finalPrice = Math.floor((kurus * (100 - entry.pct)) / 100);
-  return { finalPrice, applied: finalPrice < kurus, discountPct: entry.pct };
+  return eligible ? entry.pct : 0;
 }
 
-// İsteğe bağlı: map'i dışarı ver (checkout'ta code doğrulamak için)
+export function calcDiscountedUnitPrice(kurus, attrib, productSlug) {
+  const pct = resolveDiscountPct(productSlug, attrib);
+  if (!pct) return { finalPrice: kurus, applied: false, discountPct: 0 };
+  const finalPrice = Math.floor((kurus * (100 - pct)) / 100);
+  return { finalPrice, applied: finalPrice < kurus, discountPct: pct };
+}
+
 export function getProductCodeFromMap(slug) {
-  const map = parseMap();
+  const map = readMap();
   return map[slug]?.code || "";
 }
