@@ -5,21 +5,8 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { randomUUID, createHmac } from "crypto";
 import { query } from "@/lib/db";
-import { getAttribution, calcDiscountedUnitPrice, getProductCodeFromMap } from "@/lib/attribution";
-
-async function getProductBySlug(slug) {
-  const rows = await query(
-    "SELECT id, slug, name, description, price, imageUrl, product_code, isActive FROM products WHERE slug=? LIMIT 1",
-    [slug]
-  );
-  return rows.length ? rows[0] : null;
-}
-
-function parseForm(body) {
-  const slug = body.get("slug");
-  const qty = Math.max(1, parseInt(body.get("qty") || "1", 10));
-  return { slug, qty };
-}
+import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
+import { getCartIdOptional } from "@/lib/cart";
 
 function signHmac(ts, raw, key) {
   return createHmac("sha256", key).update(`${ts}.${raw}`).digest("hex");
@@ -28,97 +15,103 @@ function signHmac(ts, raw, key) {
 export async function POST(req) {
   try {
     const form = await req.formData();
-    const { slug, qty } = parseForm(form);
-    if (!slug) return NextResponse.json({ ok: false, error: "missing slug" }, { status: 400 });
+    const fromCart = form.get("fromCart")?.toString() === "1";
 
-    const product = await getProductBySlug(slug);
-    if (!product || !product.isActive) {
-      return NextResponse.json({ ok: false, error: "product not found" }, { status: 404 });
-    }
+    // 1) Cart’tan satın alma (önerilen yol)
+    if (fromCart) {
+      const cartId = await getCartIdOptional();
+      if (!cartId) return NextResponse.json({ ok:false, error:"empty cart" }, { status:400 });
 
-    const attrib = await getAttribution(); // ⬅️ async
-    const disc = calcDiscountedUnitPrice(product.price, attrib, product.slug);
+      const cartRow = await query("SELECT email FROM carts WHERE id=? LIMIT 1", [cartId]);
+      const email = cartRow[0]?.email || null;
+      if (!email) return NextResponse.json({ ok:false, error:"email required" }, { status:400 });
 
-    const unit = product.price;              // kuruş
-    const unitAfter = disc.finalPrice;       // kuruş
-    const quantity = Math.max(1, qty);
+      const items = await query(
+        `SELECT ci.product_id, p.slug, p.name, p.price, p.product_code, ci.quantity
+         FROM cart_items ci JOIN products p ON p.id=ci.product_id
+         WHERE ci.cart_id=?`, [cartId]
+      );
+      if (!items.length) return NextResponse.json({ ok:false, error:"empty cart" }, { status:400 });
 
-    const line = unit * quantity;
-    const lineAfter = unitAfter * quantity;
-    const discountTotal = line - lineAfter;
+      const attrib = await getAttribution();
+      let total=0, totalAfter=0, discountTotal=0;
+      const orderItems = items.map(it=>{
+        const d = calcDiscountedUnitPrice(it.price, attrib, it.slug);
+        const line = it.price * it.quantity;
+        const lineAfter = d.finalPrice * it.quantity;
+        total += line; totalAfter += lineAfter; discountTotal += (line - lineAfter);
+        return {
+          productId: String(it.product_id),
+          productCode: it.product_code,
+          productSlug: it.slug,
+          name: it.name,
+          quantity: it.quantity,
+          unitPrice: it.price,
+          unitPriceAfterDiscount: d.finalPrice
+        };
+      });
 
-    // sipariş
-    const orderNumber = "ORD-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
-    const ins = await query(
-      "INSERT INTO orders (order_number, total_amount, discount_total) VALUES (?,?,?)",
-      [orderNumber, lineAfter, discountTotal]
-    );
-    const orderId = ins.insertId;
+      const orderNumber = "ORD-" + Date.now() + "-" + Math.floor(Math.random()*1000);
+      const ins = await query(
+        "INSERT INTO orders (order_number, email, total_amount, discount_total) VALUES (?,?,?,?)",
+        [orderNumber, email, totalAfter, discountTotal]
+      );
+      const orderId = ins.insertId;
 
-    await query(
-      `INSERT INTO order_items
-       (order_id, product_id, product_slug, product_name, product_code, quantity, unit_price, unit_price_after_discount)
-       VALUES (?,?,?,?,?,?,?,?)`,
-      [orderId, product.id, product.slug, product.name, product.product_code, quantity, unit, unitAfter]
-    );
+      for (const it of orderItems) {
+        await query(
+          `INSERT INTO order_items
+           (order_id, product_id, product_slug, product_name, product_code, quantity, unit_price, unit_price_after_discount)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [orderId, it.productId, it.productSlug, it.name, it.productCode, it.quantity, it.unitPrice, it.unitPriceAfterDiscount]
+        );
+      }
 
-    // indirim yoksa post yok (kuralın)
-    if (!disc.applied || discountTotal <= 0 || !attrib) {
+      // Kural: indirim uygulanmadıysa Cabo POST yok
+      if (discountTotal > 0 && attrib) {
+        const payload = {
+          version: 1,
+          requestId: randomUUID(),
+          order: {
+            orderId: String(orderId),
+            orderNumber,
+            totalAmount: totalAfter,
+            discountTotal,
+            email,
+            createdAt: new Date().toISOString(),
+            items: orderItems
+          },
+          referral: { token: attrib.ref, linkId: attrib.lid, scope: attrib.scope }
+        };
+        const raw = JSON.stringify(payload);
+        const ts = Math.floor(Date.now()/1000).toString();
+        const key = process.env.CABO_HMAC_SECRET;
+        const keyId = process.env.CABO_KEY_ID;
+        const sig = signHmac(ts, raw, key);
+
+        await fetch(process.env.CABO_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "content-type":"application/json",
+            "x-cabo-timestamp": ts,
+            "x-cabo-key-id": keyId,
+            "x-cabo-signature": `v1=${sig}`,
+            "x-request-id": payload.requestId,
+            "cache-control":"no-store"
+          },
+          body: raw
+        }).catch(()=>{});
+      }
+
+      // Sepeti boşalt
+      await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
       return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
     }
 
-    // Cabo POST
-    const item = {
-      productCode: product.product_code,
-      productSlug: product.slug,
-      name: product.name,
-      quantity,
-      unitPrice: unit,
-      unitPriceAfterDiscount: unitAfter
-    };
-    if ((process.env.CABO_USE_PRODUCT_IDS || "0") === "1") {
-      item.productId = String(product.id);
-    }
+    // 2) (Opsiyonel) tek ürün “hemen satın al” yolunu bloke ediyoruz:
+    return NextResponse.json({ ok:false, error:"use cart checkout" }, { status:400 });
 
-    const payload = {
-      version: 1,
-      requestId: randomUUID(),
-      order: {
-        orderId: String(orderId),
-        orderNumber,
-        totalAmount: lineAfter,
-        discountTotal,
-        createdAt: new Date().toISOString(),
-        items: [item]
-      },
-      referral: {
-        token: attrib.ref,
-        linkId: attrib.lid,
-        scope: attrib.scope
-      }
-    };
-
-    const raw = JSON.stringify(payload);
-    const ts = Math.floor(Date.now() / 1000).toString();
-    const key = process.env.CABO_HMAC_SECRET;
-    const keyId = process.env.CABO_KEY_ID;
-    const sig = signHmac(ts, raw, key);
-
-    await fetch(process.env.CABO_WEBHOOK_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-cabo-timestamp": ts,
-        "x-cabo-key-id": keyId,
-        "x-cabo-signature": `v1=${sig}`,
-        "x-request-id": payload.requestId,
-        "cache-control": "no-store"
-      },
-      body: raw
-    }).catch(() => {});
-
-    return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e.message || "server-error" }, { status: 500 });
+    return NextResponse.json({ ok:false, error: e.message || "server-error" }, { status:500 });
   }
 }

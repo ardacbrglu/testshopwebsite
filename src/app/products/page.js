@@ -3,10 +3,7 @@ import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 import Link from "next/link";
 
-function fmtTRY(kurus) {
-  const n = Number(kurus || 0) / 100;
-  return n.toLocaleString("tr-TR", { style: "currency", currency: "TRY", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
+function fmtTRY(k) { return (Number(k||0)/100).toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2}); }
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +11,7 @@ export default async function ProductsPage() {
   const products = await query(
     "SELECT id, slug, name, description, price, imageUrl, isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC"
   );
-  const attrib = await getAttribution(); // ⬅️ async
+  const attrib = await getAttribution();
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
@@ -42,13 +39,14 @@ export default async function ProductsPage() {
 
               <div className="flex gap-2">
                 <Link className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm" href={`/products/${p.slug}`}>
-                  View
+                  Gör
                 </Link>
-                <form action={`/api/checkout`} method="post" className="ml-auto">
+                <form action="/api/cart" method="post" className="ml-auto">
+                  <input type="hidden" name="action" value="add" />
                   <input type="hidden" name="slug" value={p.slug} />
                   <input type="hidden" name="qty" value="1" />
                   <button className="px-3 py-2 rounded-xl bg-white text-black text-sm hover:opacity-90" type="submit">
-                    Buy now
+                    Sepete ekle
                   </button>
                 </form>
               </div>

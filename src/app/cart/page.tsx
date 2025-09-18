@@ -1,197 +1,151 @@
 // src/app/cart/page.tsx
-"use client";
+import { query } from "@/lib/db";
+import { getCartIdOptional } from "@/lib/cart";
+import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-
-type StoredCartItem = { slug: string; quantity: number };
-type Product = {
-  slug: string; name: string; image: string;
-  unitFinal: number; unitOriginal: number; discountLabel: string | null; currency: string;
+type CartRow = {
+  cart_item_id: number;
+  product_id: number;
+  slug: string;
+  name: string;
+  price: number;
+  imageUrl: string;
+  quantity: number;
 };
-type OrderItem = { slug: string; name: string; quantity: number; unitPrice: number };
 
-type CheckoutSuccess = {
-  ok: true;
-  orderNumber: string;
-  email: string;
-  items: OrderItem[];
-  summary: { total: number; itemCount: number };
-  message?: string;
-};
-type CheckoutError = { ok: false; error?: string };
-type CheckoutResponse = CheckoutSuccess | CheckoutError;
+function fmtTRY(k: number) {
+  const n = Number(k || 0) / 100;
+  return n.toLocaleString("tr-TR", { style: "currency", currency: "TRY", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
-function isCheckoutSuccess(d: CheckoutResponse): d is CheckoutSuccess { return !!d && (d as CheckoutSuccess).ok === true; }
-function money(n: number, currency = "TRY") { return new Intl.NumberFormat("tr-TR", { style: "currency", currency }).format(n); }
-const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const dynamic = "force-dynamic";
 
-export default function CartPage() {
-  const [cart, setCart] = useState<StoredCartItem[]>([]);
-  const [catalog, setCatalog] = useState<Product[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [email, setEmail] = useState<string>("");
-  const [emailSaved, setEmailSaved] = useState<boolean>(false);
+export default async function CartPage() {
+  const cartId = await getCartIdOptional();
+  let items: CartRow[] = [];
+  let email: string | null = null;
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("cart");
-      setCart(raw ? (JSON.parse(raw) as StoredCartItem[]) : []);
-      const em = localStorage.getItem("customer_email") || "";
-      setEmail(em);
-      setEmailSaved(Boolean(em));
-    } catch {
-      setCart([]);
-    }
-    const hdrs: Record<string, string> = {};
-    if (typeof window !== "undefined" && sessionStorage.getItem("cabo_preview") === "1") {
-      hdrs["x-cabo-preview"] = "1";
-    }
-    fetch("/api/products", { cache: "no-store", headers: hdrs })
-      .then((r) => r.json())
-      .then((d) => setCatalog((d?.data ?? []) as Product[]))
-      .catch(() => setCatalog([]));
-  }, []);
+  if (cartId) {
+    items = (await query(
+      `SELECT ci.id as cart_item_id, ci.product_id, p.slug, p.name, p.price, p.imageUrl, ci.quantity
+       FROM cart_items ci JOIN products p ON p.id=ci.product_id
+       WHERE ci.cart_id=? ORDER BY ci.id DESC`,
+      [cartId]
+    )) as CartRow[];
 
-  const rows = useMemo(() => {
-    return cart.map((ci) => {
-      const p = catalog.find((x) => x.slug === ci.slug);
-      if (!p) return null;
-      const line = Math.round(p.unitFinal * ci.quantity * 100) / 100;
-      return { ...ci, product: p, line };
-    }).filter(Boolean) as { slug: string; quantity: number; product: Product; line: number }[];
-  }, [cart, catalog]);
+    const row = await query("SELECT email FROM carts WHERE id=? LIMIT 1", [cartId]);
+    email = (row[0]?.email as string) || null;
+  }
 
-  const total = rows.reduce((s, r) => s + r.line, 0);
-  const currency = rows[0]?.product.currency || "TRY";
+  const attrib = await getAttribution();
 
-  const setQty = (slug: string, q: number) => {
-    q = Math.max(1, Math.floor(q || 1));
-    const next = cart.map((c) => (c.slug === slug ? { ...c, quantity: q } : c));
-    setCart(next);
-    localStorage.setItem("cart", JSON.stringify(next));
-  };
+  let subTotal = 0,
+    subAfter = 0,
+    discountTotal = 0;
 
-  const removeOne = (slug: string) => {
-    const next = cart.filter((c) => c.slug !== slug);
-    setCart(next);
-    localStorage.setItem("cart", JSON.stringify(next));
-  };
+  const hydrated = items.map((it) => {
+    const d = calcDiscountedUnitPrice(it.price, attrib, it.slug);
+    const line = it.price * it.quantity;
+    const lineAfter = d.finalPrice * it.quantity;
+    subTotal += line;
+    subAfter += lineAfter;
+    discountTotal += line - lineAfter;
+    return { ...it, unit_after: d.finalPrice, pct: d.discountPct };
+  });
 
-  const saveEmail = () => {
-    const em = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { setMsg("Lütfen geçerli bir e-posta girin."); return; }
-    localStorage.setItem("customer_email", em);
-    setEmailSaved(true);
-    setMsg("E-posta kaydedildi.");
-  };
-
-  const checkout = async () => {
-    const em = (localStorage.getItem("customer_email") || "").trim().toLowerCase();
-    if (!em) { setMsg("Sipariş vermek için e-posta zorunludur."); return; }
-
-    setBusy(true); setMsg(null);
-    try {
-      const res = await fetch("/api/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: cart, email: em }),
-      });
-      const data: CheckoutResponse = await res.json();
-
-      if (!res.ok || !isCheckoutSuccess(data)) {
-        const err = !res.ok ? `http_${res.status}` : (("error" in data && data.error) || "checkout_failed");
-        throw new Error(err);
-      }
-
-      window.location.href = `/success?ord=${encodeURIComponent(data.orderNumber)}`;
-    } catch (e) {
-      setMsg(`Satın alma başarısız: ${errMsg(e)}`);
-    } finally {
-      setBusy(false);
-      localStorage.removeItem("cart");
-      setCart([]);
-    }
-  };
+  const canCheckout = !!email && hydrated.length > 0;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8">
-      <h1 className="text-2xl font-semibold mb-6">Sepetim</h1>
+    <main className="mx-auto max-w-5xl px-4 py-8">
+      <h1 className="text-2xl font-semibold mb-4">Sepet</h1>
 
-      <div className="mb-6 max-w-xl">
-        <label className="block text-sm mb-1">E-posta (sipariş için zorunlu)</label>
-        <div className="flex items-center gap-2">
-          <input
-            className="w-full rounded-xl border border-white/20 bg-black/40 px-3 py-2"
-            value={email}
-            onChange={(e) => { setEmail(e.target.value); setEmailSaved(false); }}
-            placeholder="you@example.com"
-          />
-          <button className="rounded-xl border border-white/20 px-4 py-2 hover:bg-white/10" onClick={saveEmail}>
-            Kaydet
-          </button>
-        </div>
-        <p className="text-xs text-white/50 mt-1">
-          Bu adresle sipariş geçmişinizi “Satın Alımlarım” sayfasından görebilirsiniz.
-        </p>
-      </div>
-
-      {rows.length === 0 ? (
-        <div className="text-white/70">
-          Sepet boş. <Link href="/products" className="underline">Ürünlere dön</Link>
-        </div>
+      {hydrated.length === 0 ? (
+        <p>Sepet boş.</p>
       ) : (
-        <>
-          <div className="space-y-4">
-            {rows.map((r) => (
-              <div key={r.slug} className="flex items-center gap-4 rounded-xl border border-white/10 p-3">
-                <img src={r.product.image} alt={r.product.name} className="w-20 h-20 object-cover rounded-lg" />
-                <div className="flex-1">
-                  <div className="font-medium">{r.product.name}</div>
-                  <div className="text-sm text-white/60">
-                    {r.product.discountLabel ? (
-                      <>
-                        <span className="line-through mr-2">{money(r.product.unitOriginal, currency)}</span>
-                        <span>{money(r.product.unitFinal, currency)}</span>
-                        <span className="text-emerald-400 ml-2">({r.product.discountLabel})</span>
-                      </>
-                    ) : (
-                      <span>{money(r.product.unitFinal, currency)}</span>
-                    )}
+        <div className="space-y-4">
+          {hydrated.map((it) => (
+            <div key={it.cart_item_id} className="flex items-center gap-3 border border-neutral-800 rounded-xl p-3">
+              <img src={it.imageUrl} className="w-16 h-16 object-cover rounded-lg" alt="" />
+              <div className="flex-1">
+                <div className="font-medium">{it.name}</div>
+                <div className="text-sm text-neutral-400">{it.slug}</div>
+                {it.pct > 0 ? (
+                  <div className="text-sm">
+                    <span className="text-green-400">−{it.pct}%</span>{" "}
+                    <span className="line-through text-neutral-500 mr-1">{fmtTRY(it.price)}</span>
+                    <b>{fmtTRY(it.unit_after)}</b>
                   </div>
-                </div>
-                <input
-                  type="number" min={1}
-                  className="w-24 rounded-md border border-white/20 bg-black/40 px-2 py-1"
-                  value={r.quantity}
-                  onChange={(e) => setQty(r.slug, Math.max(1, Math.floor(+e.target.value || 1)))}
-                />
-                <div className="w-32 text-right font-medium">{money(r.line, currency)}</div>
-                <button onClick={() => removeOne(r.slug)} className="rounded-lg border border-white/20 px-3 py-1 hover:bg-white/10">
-                  Sil
-                </button>
+                ) : (
+                  <div className="text-sm">{fmtTRY(it.price)}</div>
+                )}
               </div>
-            ))}
-          </div>
 
-          <div className="mt-6 flex items-center justify-between">
-            <div className="text-lg">
-              Ara Toplam: <span className="font-semibold">{money(total, currency)}</span>
+              <form action="/api/cart" method="post" className="flex items-center gap-2">
+                <input type="hidden" name="action" value="update" />
+                <input type="hidden" name="cart_item_id" value={it.cart_item_id} />
+                <input
+                  name="qty"
+                  type="number"
+                  min={1}
+                  defaultValue={it.quantity}
+                  className="bg-neutral-900 border border-neutral-800 rounded-xl px-2 py-1 w-20"
+                />
+                <button className="text-sm px-2 py-1 rounded bg-neutral-800">Güncelle</button>
+              </form>
+
+              <form action="/api/cart" method="post">
+                <input type="hidden" name="action" value="remove" />
+                <input type="hidden" name="cart_item_id" value={it.cart_item_id} />
+                <button className="text-sm px-2 py-1 rounded bg-red-600">Sil</button>
+              </form>
             </div>
-            <button
-              disabled={busy || !emailSaved}
-              onClick={checkout}
-              className="rounded-xl border border-white/20 px-5 py-2 hover:bg-white/10 disabled:opacity-60"
-              title={!emailSaved ? "Önce e-postayı kaydedin" : ""}
-            >
-              {busy ? "İşleniyor..." : "Satın Al"}
-            </button>
+          ))}
+
+          <div className="border border-neutral-800 rounded-xl p-4">
+            <div className="flex justify-between">
+              <span>Ara toplam</span>
+              <b>{fmtTRY(subTotal)}</b>
+            </div>
+            {discountTotal > 0 && (
+              <div className="flex justify-between text-green-400">
+                <span>İndirim</span>
+                <b>−{fmtTRY(discountTotal)}</b>
+              </div>
+            )}
+            <div className="flex justify-between mt-1 text-lg">
+              <span>Genel toplam</span>
+              <b>{fmtTRY(subAfter)}</b>
+            </div>
           </div>
 
-          {msg && <div className="mt-3 text-sm text-white/80">{msg}</div>}
-        </>
+          <div className="border border-neutral-800 rounded-xl p-4 space-y-3">
+            <form action="/api/cart" method="post" className="flex items-center gap-3">
+              <input type="hidden" name="action" value="set-email" />
+              <input
+                name="email"
+                type="email"
+                placeholder="E-posta adresiniz"
+                defaultValue={email || ""}
+                className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 flex-1"
+              />
+              <button className="px-3 py-2 rounded-xl bg-neutral-800">Kaydet</button>
+            </form>
+
+            <form action="/api/checkout" method="post">
+              <input type="hidden" name="fromCart" value="1" />
+              <button
+                className={`px-4 py-2 rounded-xl ${
+                  canCheckout ? "bg-white text-black" : "bg-neutral-800 text-neutral-500 cursor-not-allowed"
+                }`}
+                disabled={!canCheckout}
+              >
+                Satın al
+              </button>
+            </form>
+            {!email && <p className="text-sm text-yellow-400">Satın almak için önce e-posta girin.</p>}
+          </div>
+        </div>
       )}
-    </div>
+    </main>
   );
 }

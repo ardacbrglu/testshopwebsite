@@ -2,12 +2,13 @@
 import { notFound } from "next/navigation";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
-import PriceBlock from "@/components/PriceBlock";
+
+function fmtTRY(kurus){ const n=Number(kurus||0)/100; return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
 
 export const dynamic = "force-dynamic";
 
-export default async function ProductDetail({ params }) {
-  const slug = params.slug;
+export default async function ProductDetail(props) {
+  const { slug } = await props.params; // ⬅️ önemli: await
   const rows = await query(
     "SELECT id, slug, name, description, price, imageUrl, product_code, isActive FROM products WHERE slug=? LIMIT 1",
     [slug]
@@ -15,9 +16,8 @@ export default async function ProductDetail({ params }) {
   if (!rows.length || !rows[0].isActive) return notFound();
   const p = rows[0];
 
-  const attrib = await getAttribution(); // ⬅️ async
+  const attrib = await getAttribution();
   const d = calcDiscountedUnitPrice(p.price, attrib, p.slug);
-  const qtyId = "qty-input";
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8">
@@ -25,32 +25,65 @@ export default async function ProductDetail({ params }) {
         <img src={p.imageUrl} alt={p.name} className="w-full h-64 object-cover rounded-2xl" />
         <div>
           <h1 className="text-2xl font-semibold mb-2">{p.name}</h1>
-          <p className="text-neutral-400 mb-6">{p.description}</p>
+          <p className="text-neutral-400 mb-4">{p.description}</p>
 
-          <PriceBlock
-            unitPrice={p.price}
-            unitDiscounted={d.finalPrice}
-            discountPct={d.discountPct}
-            qtyInputId={qtyId}
-          />
+          {d.applied ? (
+            <>
+              <div className="text-sm text-green-400 mb-1">Ref indirimi −{d.discountPct}%</div>
+              <div className="text-2xl mb-2">
+                <span className="line-through text-neutral-500 mr-3">{fmtTRY(p.price)}</span>
+                <span className="font-bold">{fmtTRY(d.finalPrice)}</span>
+              </div>
+            </>
+          ) : (
+            <div className="text-2xl mb-2">{fmtTRY(p.price)}</div>
+          )}
 
-          <form action={`/api/checkout`} method="post" className="mt-4">
+          {/* Canlı toplam: client gerekmeden basit hesap */}
+          <div className="text-sm text-neutral-300 mb-4" id="total-line">
+            Toplam: {d.applied ? (
+              <>
+                <span className="line-through text-neutral-500 mr-2" data-full>{fmtTRY(p.price)}</span>
+                <span className="font-semibold" data-disc>{fmtTRY(d.finalPrice)}</span>
+              </>
+            ) : (
+              <b data-only>{fmtTRY(p.price)}</b>
+            )}
+          </div>
+
+          <form action="/api/cart" method="post" id="add-to-cart-form">
+            <input type="hidden" name="action" value="add" />
             <input type="hidden" name="slug" value={p.slug} />
             <div className="flex items-center gap-3 mb-4">
-              <label className="text-sm" htmlFor={qtyId}>Adet</label>
-              <input
-                id={qtyId}
-                name="qty"
-                type="number"
-                min="1"
-                defaultValue="1"
-                className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 w-24"
-              />
+              <label className="text-sm" htmlFor="qty">Adet</label>
+              <input id="qty" name="qty" type="number" min="1" defaultValue="1"
+                     className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 w-24" />
             </div>
-            <button type="submit" className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90">
-              Satın al
+            <button className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90" type="submit">
+              Sepete ekle
             </button>
           </form>
+
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `
+              (function(){
+                const price=${p.price}; const disc=${d.finalPrice}; const applied=${d.applied?'true':'false'};
+                const qtyEl=document.getElementById('qty'); const line=document.getElementById('total-line');
+                function fmt(v){return (v/100).toLocaleString('tr-TR',{style:'currency',currency:'TRY',minimumFractionDigits:2,maximumFractionDigits:2});}
+                function update(){
+                  const q=Math.max(1,parseInt(qtyEl.value||'1',10));
+                  if(applied){
+                    line.innerHTML='Toplam: <span class="line-through text-neutral-500 mr-2">'+fmt(price*q)+'</span><span class="font-semibold">'+fmt(disc*q)+'</span>';
+                  }else{
+                    line.innerHTML='Toplam: <b>'+fmt(price*q)+'</b>';
+                  }
+                }
+                qtyEl.addEventListener('input',update); qtyEl.addEventListener('change',update); update();
+              })();
+            `,
+            }}
+          />
         </div>
       </div>
     </main>

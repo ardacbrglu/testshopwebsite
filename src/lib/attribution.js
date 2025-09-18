@@ -24,37 +24,29 @@ function readMap() {
       map[slug] = { code: val?.code || "", pct };
     }
     return map;
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
 export async function getAttribution() {
-  const v = (await cookies()).get("cabo_attrib")?.value; // Next 15: async
+  const v = (await cookies()).get("cabo_attrib")?.value;
   const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
   const obj = verifyCookie(v, secret);
-  if (!obj) return null;
-  const ttlDays = parseInt(process.env.CABO_COOKIE_TTL_DAYS || "14", 10);
-  if (Date.now() - (obj.ts || 0) > ttlDays * 86400 * 1000) return null;
-  return obj; // {ref,lid,scope,landingProduct}
-}
-
-export function resolveDiscountPct(productSlug, attrib) {
-  if (!attrib) return 0;
-  const map = readMap();
-  const entry = map[productSlug];
-  if (!entry) return 0;
-  const eligible =
-    attrib.scope === "sitewide" ||
-    (attrib.scope === "landing" && attrib.landingProduct && attrib.landingProduct === productSlug);
-  return eligible ? entry.pct : 0;
+  return obj || null; // session cookie olduğundan ayrıca TTL kontrol etmiyoruz
 }
 
 export function calcDiscountedUnitPrice(kurus, attrib, productSlug) {
-  const pct = resolveDiscountPct(productSlug, attrib);
-  if (!pct) return { finalPrice: kurus, applied: false, discountPct: 0 };
-  const finalPrice = Math.floor((kurus * (100 - pct)) / 100);
-  return { finalPrice, applied: finalPrice < kurus, discountPct: pct };
+  if (!attrib) return { finalPrice: kurus, applied: false, discountPct: 0 };
+  const map = readMap();
+  const entry = map[productSlug];
+  if (!entry || !entry.pct) return { finalPrice: kurus, applied: false, discountPct: 0 };
+
+  const eligible =
+    attrib.scope === "sitewide" ||
+    (attrib.scope === "landing" && attrib.landingProduct && attrib.landingProduct === productSlug);
+
+  if (!eligible) return { finalPrice: kurus, applied: false, discountPct: 0 };
+  const finalPrice = Math.floor((kurus * (100 - entry.pct)) / 100);
+  return { finalPrice, applied: finalPrice < kurus, discountPct: entry.pct };
 }
 
 export function getProductCodeFromMap(slug) {
