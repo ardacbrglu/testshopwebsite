@@ -44,31 +44,30 @@ export async function POST(req: Request) {
     const html = wantsHtml(req);
     const { id: cartId } = await getOrCreateCart();
 
+    // e-posta
     if (action === "set-email") {
       const email = (form.get("email") || "").toString().trim();
       if (!email || !isEmail(email)) {
-        return html
-          ? NextResponse.redirect(new URL("/cart?err=invalid_email", req.url))
-          : NextResponse.json({ ok:false, error:"invalid email" }, { status:400 });
+        return html ? NextResponse.redirect("/cart?err=invalid_email")
+                    : NextResponse.json({ ok:false, error:"invalid email" }, { status:400 });
       }
       await attachEmailToCart(cartId, email);
-      return html ? NextResponse.redirect(new URL("/cart?ok=1", req.url))
+      return html ? NextResponse.redirect("/cart?ok=1")
                   : NextResponse.json({ ok:true });
     }
 
+    // sepete ekle
     if (action === "add") {
       const slug = (form.get("slug") || "").toString().trim();
       const qty  = parseIntSafe(form.get("qty"), 1, 1);
       if (!slug) {
-        return html
-          ? NextResponse.redirect(new URL("/products?err=missing_slug", req.url))
-          : NextResponse.json({ ok:false, error:"missing slug" }, { status:400 });
+        return html ? NextResponse.redirect("/products?err=missing_slug")
+                    : NextResponse.json({ ok:false, error:"missing slug" }, { status:400 });
       }
       const prod = await query("SELECT id FROM products WHERE slug=? AND isActive=1 LIMIT 1", [slug]);
       if (!prod.length) {
-        return html
-          ? NextResponse.redirect(new URL("/products?err=notfound", req.url))
-          : NextResponse.json({ ok:false, error:"product not found" }, { status:404 });
+        return html ? NextResponse.redirect("/products?err=notfound")
+                    : NextResponse.json({ ok:false, error:"product not found" }, { status:404 });
       }
       const pid = Number(prod[0].id);
       const exists = await query("SELECT id,quantity FROM cart_items WHERE cart_id=? AND product_id=? LIMIT 1", [cartId, pid]);
@@ -77,46 +76,46 @@ export async function POST(req: Request) {
       } else {
         await query("INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?,?,?)", [cartId, pid, qty]);
       }
-      return html ? NextResponse.redirect(new URL("/cart", req.url))
+      return html ? NextResponse.redirect("/cart")
                   : NextResponse.json({ ok:true, items: await hydrateCart(cartId) });
     }
 
+    // adet güncelle
     if (action === "update") {
       const itemId = parseIntSafe(form.get("cart_item_id"), 0, 1);
       const qty    = parseIntSafe(form.get("qty"), 1, 1);
       if (!itemId) {
-        return html
-          ? NextResponse.redirect(new URL("/cart?err=missing_item", req.url))
-          : NextResponse.json({ ok:false, error:"missing cart_item_id" }, { status:400 });
+        return html ? NextResponse.redirect("/cart?err=missing_item")
+                    : NextResponse.json({ ok:false, error:"missing cart_item_id" }, { status:400 });
       }
       await query("UPDATE cart_items SET quantity=? WHERE id=? AND cart_id=?", [qty, itemId, cartId]);
-      return html ? NextResponse.redirect(new URL("/cart", req.url))
+      return html ? NextResponse.redirect("/cart")
                   : NextResponse.json({ ok:true, items: await hydrateCart(cartId) });
     }
 
+    // sil
     if (action === "remove") {
       const itemId = parseIntSafe(form.get("cart_item_id"), 0, 1);
       if (!itemId) {
-        return html
-          ? NextResponse.redirect(new URL("/cart?err=missing_item", req.url))
-          : NextResponse.json({ ok:false, error:"missing cart_item_id" }, { status:400 });
+        return html ? NextResponse.redirect("/cart?err=missing_item")
+                    : NextResponse.json({ ok:false, error:"missing cart_item_id" }, { status:400 });
       }
       await query("DELETE FROM cart_items WHERE id=? AND cart_id=?", [itemId, cartId]);
-      return html ? NextResponse.redirect(new URL("/cart", req.url))
+      return html ? NextResponse.redirect("/cart")
                   : NextResponse.json({ ok:true, items: await hydrateCart(cartId) });
     }
 
+    // temizle
     if (action === "clear") {
       await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
-      return html ? NextResponse.redirect(new URL("/cart", req.url))
+      return html ? NextResponse.redirect("/cart")
                   : NextResponse.json({ ok:true, items: [] });
     }
 
-    return html
-      ? NextResponse.redirect(new URL("/cart?err=unknown_action", req.url))
-      : NextResponse.json({ ok:false, error:"unknown action" }, { status:400 });
+    return html ? NextResponse.redirect("/cart?err=unknown_action")
+                : NextResponse.json({ ok:false, error:"unknown action" }, { status:400 });
   } catch (e: unknown) {
-    const msg = (e instanceof Error) ? e.message : "server-error";
+    const msg = e instanceof Error ? e.message : "server-error";
     return NextResponse.json({ ok:false, error: msg }, { status:500 });
   }
 }

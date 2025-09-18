@@ -99,7 +99,7 @@ export async function POST(req) {
     }
 
     await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
-    return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
+    return NextResponse.redirect(`/orders?ok=1&ord=${orderNumber}`);
   } catch (e) {
     return NextResponse.json({ ok:false, error: (e?.message || "server-error") }, { status:500 });
   }
