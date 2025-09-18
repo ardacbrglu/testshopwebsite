@@ -1,4 +1,3 @@
-// src/app/products/page.js
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 import { tryFromKurus } from "@/lib/currency";
@@ -10,7 +9,7 @@ export default async function ProductsPage() {
   const products = await query(
     "SELECT id, slug, name, description, price, imageUrl, isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC"
   );
-  const attrib = getAttribution();
+  const attrib = await getAttribution();   // ⬅️ async oldu
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">

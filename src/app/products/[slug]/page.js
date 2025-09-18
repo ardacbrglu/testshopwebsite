@@ -1,4 +1,3 @@
-// src/app/products/[slug]/page.js
 import { notFound } from "next/navigation";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
@@ -15,7 +14,7 @@ export default async function ProductDetail({ params }) {
   if (!rows.length || !rows[0].isActive) return notFound();
 
   const p = rows[0];
-  const attrib = getAttribution();
+  const attrib = await getAttribution();   // ⬅️ async oldu
   const d = calcDiscountedUnitPrice(p.price, attrib, p.slug);
 
   return (
@@ -54,12 +53,6 @@ export default async function ProductDetail({ params }) {
               Satın al
             </button>
           </form>
-
-          {!attrib && (
-            <p className="text-xs text-neutral-500 mt-4">
-              * İndirim sadece Cabo referans linki ile geldiğinizde uygulanır.
-            </p>
-          )}
         </div>
       </div>
     </main>

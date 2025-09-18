@@ -2,6 +2,7 @@
 import { cookies } from "next/headers";
 import { createHmac } from "crypto";
 
+/* ----- helpers ----- */
 function verifyCookie(value, secret) {
   if (!value) return null;
   const [b64, sig] = value.split(".");
@@ -15,7 +16,6 @@ function verifyCookie(value, secret) {
 function readMap() {
   try {
     let raw = process.env.CABO_MAP_JSON || "{}";
-    // Çok satırlı/bozuk JSON'u normalize et
     raw = raw.replace(/\r?\n/g, "").replace(/\s{2,}/g, " ");
     const obj = JSON.parse(raw);
     const map = {};
@@ -30,9 +30,11 @@ function readMap() {
   }
 }
 
-export function getAttribution() {
+/* ----- public API (ASYNC!) ----- */
+export async function getAttribution() {
+  // ⬇️ Next 15: cookies() async
+  const v = (await cookies()).get("cabo_attrib")?.value;
   const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
-  const v = cookies().get("cabo_attrib")?.value;
   const obj = verifyCookie(v, secret);
   if (!obj) return null;
   const ttlDays = parseInt(process.env.CABO_COOKIE_TTL_DAYS || "14", 10);
@@ -45,11 +47,9 @@ export function resolveDiscountPct(productSlug, attrib) {
   const map = readMap();
   const entry = map[productSlug];
   if (!entry) return 0;
-
   const eligible =
     attrib.scope === "sitewide" ||
     (attrib.scope === "landing" && attrib.landingProduct && attrib.landingProduct === productSlug);
-
   return eligible ? entry.pct : 0;
 }
 
