@@ -7,6 +7,7 @@ import { randomUUID, createHmac } from "crypto";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 import { getCartIdOptional } from "@/lib/cart";
+import { absoluteFromReq } from "@/lib/urls";
 
 function signHmac(ts, raw, key) {
   return createHmac("sha256", key).update(`${ts}.${raw}`).digest("hex");
@@ -66,6 +67,7 @@ export async function POST(req) {
       );
     }
 
+    // indirim uygulanmışsa Cabo S2S
     if (discountTotal > 0 && attrib) {
       const payload = {
         version: 1,
@@ -99,7 +101,7 @@ export async function POST(req) {
     }
 
     await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
-    return NextResponse.redirect(`/orders?ok=1&ord=${orderNumber}`);
+    return NextResponse.redirect(absoluteFromReq(req, `/orders?ok=1&ord=${orderNumber}`));
   } catch (e) {
     return NextResponse.json({ ok:false, error: (e?.message || "server-error") }, { status:500 });
   }

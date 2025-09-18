@@ -1,19 +1,13 @@
-// middleware.js
+// middleware.js (kökte)
 import { NextResponse } from "next/server";
 
 export const config = { matcher: ["/((?!_next|favicon.ico).*)"] };
 
 async function hmacSHA256(secret, text) {
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(text));
-  return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2,"0")).join("");
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name:"HMAC", hash:"SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(text));
+  return Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
 export async function middleware(req) {
@@ -22,7 +16,7 @@ export async function middleware(req) {
   const lid = url.searchParams.get("lid");
   if (!ref || !lid) return NextResponse.next();
 
-  const scope = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase(); // sitewide|landing
+  const scope = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase();
   const landingProduct = url.searchParams.get("p") || "";
   const secret = process.env.TESTSHOP_COOKIE_SECRET || process.env.CABO_HMAC_SECRET || "dev-secret";
 
@@ -30,8 +24,11 @@ export async function middleware(req) {
   const sig = await hmacSHA256(secret, payload);
   const value = Buffer.from(payload, "utf8").toString("base64")+"."+sig;
 
-  // Oturum çerezi (kapanınca silinir)
-  const res = NextResponse.redirect(new URL(url.pathname, url.origin));
+  // Absolute redirect (origin: forwarded host/proto)
+  const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":","");
+  const host  = req.headers.get("x-forwarded-host") || req.headers.get("host") || url.host;
+  const origin = `${proto}://${host}`;
+  const res = NextResponse.redirect(`${origin}${url.pathname}`);
   res.cookies.set("cabo_attrib", value, { httpOnly:true, secure:true, sameSite:"Lax", path:"/" });
   return res;
 }
