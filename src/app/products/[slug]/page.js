@@ -3,16 +3,12 @@ import { notFound } from "next/navigation";
 import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 
-function fmtTRY(kurus){ const n=Number(kurus||0)/100; return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
-
+function fmtTRY(k){ const n=Number(k||0)/100; return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
 export const dynamic = "force-dynamic";
 
 export default async function ProductDetail(props) {
-  const { slug } = await props.params; // ⬅️ önemli: await
-  const rows = await query(
-    "SELECT id, slug, name, description, price, imageUrl, product_code, isActive FROM products WHERE slug=? LIMIT 1",
-    [slug]
-  );
+  const { slug } = await props.params;           // Next 15
+  const rows = await query("SELECT id,slug,name,description,price,imageUrl,product_code,isActive FROM products WHERE slug=? LIMIT 1",[slug]);
   if (!rows.length || !rows[0].isActive) return notFound();
   const p = rows[0];
 
@@ -39,19 +35,9 @@ export default async function ProductDetail(props) {
             <div className="text-2xl mb-2">{fmtTRY(p.price)}</div>
           )}
 
-          {/* Canlı toplam: client gerekmeden basit hesap */}
-          <div className="text-sm text-neutral-300 mb-4" id="total-line">
-            Toplam: {d.applied ? (
-              <>
-                <span className="line-through text-neutral-500 mr-2" data-full>{fmtTRY(p.price)}</span>
-                <span className="font-semibold" data-disc>{fmtTRY(d.finalPrice)}</span>
-              </>
-            ) : (
-              <b data-only>{fmtTRY(p.price)}</b>
-            )}
-          </div>
+          <div className="text-sm text-neutral-300 mb-4" id="total-line">Toplam: <b>{fmtTRY(d.finalPrice)}</b></div>
 
-          <form action="/api/cart" method="post" id="add-to-cart-form">
+          <form action="/api/cart" method="post" id="add-to-cart-form" className="mt-2">
             <input type="hidden" name="action" value="add" />
             <input type="hidden" name="slug" value={p.slug} />
             <div className="flex items-center gap-3 mb-4">
@@ -59,7 +45,7 @@ export default async function ProductDetail(props) {
               <input id="qty" name="qty" type="number" min="1" defaultValue="1"
                      className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 w-24" />
             </div>
-            <button className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90" type="submit">
+            <button type="submit" className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90">
               Sepete ekle
             </button>
           </form>
@@ -67,21 +53,18 @@ export default async function ProductDetail(props) {
           <script
             dangerouslySetInnerHTML={{
               __html: `
-              (function(){
-                const price=${p.price}; const disc=${d.finalPrice}; const applied=${d.applied?'true':'false'};
-                const qtyEl=document.getElementById('qty'); const line=document.getElementById('total-line');
-                function fmt(v){return (v/100).toLocaleString('tr-TR',{style:'currency',currency:'TRY',minimumFractionDigits:2,maximumFractionDigits:2});}
-                function update(){
-                  const q=Math.max(1,parseInt(qtyEl.value||'1',10));
-                  if(applied){
-                    line.innerHTML='Toplam: <span class="line-through text-neutral-500 mr-2">'+fmt(price*q)+'</span><span class="font-semibold">'+fmt(disc*q)+'</span>';
-                  }else{
-                    line.innerHTML='Toplam: <b>'+fmt(price*q)+'</b>';
+                (function(){
+                  const price=${p.price}; const disc=${d.finalPrice}; const applied=${d.applied?'true':'false'};
+                  const qtyEl=document.getElementById('qty'); const line=document.getElementById('total-line');
+                  function fmt(v){return (v/100).toLocaleString('tr-TR',{style:'currency',currency:'TRY',minimumFractionDigits:2,maximumFractionDigits:2});}
+                  function update(){
+                    const q=Math.max(1,parseInt(qtyEl.value||'1',10));
+                    if(applied){ line.innerHTML='Toplam: <span class="line-through text-neutral-500 mr-2">'+fmt(price*q)+'</span><b>'+fmt(disc*q)+'</b>'; }
+                    else { line.innerHTML='Toplam: <b>'+fmt(price*q)+'</b>'; }
                   }
-                }
-                qtyEl.addEventListener('input',update); qtyEl.addEventListener('change',update); update();
-              })();
-            `,
+                  qtyEl.addEventListener('input',update); qtyEl.addEventListener('change',update); update();
+                })();
+              `,
             }}
           />
         </div>

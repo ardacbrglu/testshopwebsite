@@ -3,14 +3,11 @@ import { query } from "@/lib/db";
 import { getAttribution, calcDiscountedUnitPrice } from "@/lib/attribution";
 import Link from "next/link";
 
-function fmtTRY(k) { return (Number(k||0)/100).toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2}); }
-
+function fmtTRY(k){ const n=Number(k||0)/100; return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
-  const products = await query(
-    "SELECT id, slug, name, description, price, imageUrl, isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC"
-  );
+  const products = await query("SELECT id,slug,name,description,price,imageUrl,isActive FROM products WHERE isActive=1 ORDER BY createdAt DESC");
   const attrib = await getAttribution();
 
   return (
@@ -38,13 +35,13 @@ export default async function ProductsPage() {
               )}
 
               <div className="flex gap-2">
-                <Link className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm" href={`/products/${p.slug}`}>
-                  Gör
-                </Link>
-                <form action="/api/cart" method="post" className="ml-auto">
+                <Link className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm" href={`/products/${p.slug}`}>View</Link>
+
+                <form action="/api/cart" method="post" className="ml-auto flex items-center gap-2">
                   <input type="hidden" name="action" value="add" />
                   <input type="hidden" name="slug" value={p.slug} />
-                  <input type="hidden" name="qty" value="1" />
+                  <input name="qty" type="number" min="1" defaultValue="1"
+                         className="bg-neutral-900 border border-neutral-800 rounded-xl px-2 py-1 w-16" />
                   <button className="px-3 py-2 rounded-xl bg-white text-black text-sm hover:opacity-90" type="submit">
                     Sepete ekle
                   </button>

@@ -13,13 +13,10 @@ export async function getCartIdOptional() {
 export async function getOrCreateCart() {
   const c = await cookies();
   const existing = c.get("cart_id")?.value;
-  if (existing && /^\d+$/.test(existing)) return { id: parseInt(existing, 10) };
-
+  if (existing && /^\d+$/.test(existing)) return { id: parseInt(existing,10) };
   const ins = await query("INSERT INTO carts () VALUES ()");
   const id = ins.insertId;
-
-  // Oturum çerezi
-  c.set("cart_id", String(id), { httpOnly: true, sameSite: "Lax", secure: true, path: "/" });
+  c.set("cart_id", String(id), { httpOnly:true, sameSite:"Lax", secure:true, path:"/" });
   return { id };
 }
 
