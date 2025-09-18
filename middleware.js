@@ -30,7 +30,7 @@ export async function middleware(req) {
   const sig = await hmacSHA256(secret, payload);
   const value = Buffer.from(payload, "utf8").toString("base64")+"."+sig;
 
-  // Oturum çerezi (tarayıcı kapanınca silinir)
+  // Oturum çerezi (kapanınca silinir)
   const res = NextResponse.redirect(new URL(url.pathname, url.origin));
   res.cookies.set("cabo_attrib", value, { httpOnly:true, secure:true, sameSite:"Lax", path:"/" });
   return res;

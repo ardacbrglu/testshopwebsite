@@ -34,11 +34,11 @@ export async function POST(req) {
 
     const attrib = await getAttribution();
 
-    let total=0, totalAfter=0, discountTotal=0;
+    let totalAfter=0, discountTotal=0;
     const orderItems = items.map(it=>{
       const d = calcDiscountedUnitPrice(it.price, attrib, it.slug);
       const line = it.price*it.quantity, after = d.finalPrice*it.quantity;
-      total += line; totalAfter += after; discountTotal += (line-after);
+      totalAfter += after; discountTotal += (line-after);
       return {
         productId: String(it.product_id),
         productCode: it.product_code,
@@ -66,7 +66,6 @@ export async function POST(req) {
       );
     }
 
-    // Sadece indirimli siparişlerde Cabo POST
     if (discountTotal > 0 && attrib) {
       const payload = {
         version: 1,
@@ -99,10 +98,9 @@ export async function POST(req) {
       }).catch(()=>{});
     }
 
-    // sepeti boşalt ve yönlendir
     await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
     return NextResponse.redirect(new URL(`/orders?ok=1&ord=${orderNumber}`, req.url));
   } catch (e) {
-    return NextResponse.json({ ok:false, error: e?.message || "server-error" }, { status:500 });
+    return NextResponse.json({ ok:false, error: (e?.message || "server-error") }, { status:500 });
   }
 }

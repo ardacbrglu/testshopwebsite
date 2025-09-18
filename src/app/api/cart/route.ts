@@ -18,9 +18,8 @@ function parseIntSafe(v: FormDataEntryValue | null, def: number, min = 1) {
   if (!Number.isFinite(n) || n < min) return def;
   return n;
 }
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
+function isEmail(s: string) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
+
 async function hydrateCart(cartId: number): Promise<CartItemRow[]> {
   return (await query(
     `SELECT ci.id AS cart_item_id, ci.product_id, p.slug, p.name, p.price, p.imageUrl, ci.quantity
@@ -50,11 +49,11 @@ export async function POST(req: Request) {
       if (!email || !isEmail(email)) {
         return html
           ? NextResponse.redirect(new URL("/cart?err=invalid_email", req.url))
-          : NextResponse.json({ ok: false, error: "invalid email" }, { status: 400 });
+          : NextResponse.json({ ok:false, error:"invalid email" }, { status:400 });
       }
       await attachEmailToCart(cartId, email);
       return html ? NextResponse.redirect(new URL("/cart?ok=1", req.url))
-                  : NextResponse.json({ ok: true });
+                  : NextResponse.json({ ok:true });
     }
 
     if (action === "add") {
@@ -116,7 +115,8 @@ export async function POST(req: Request) {
     return html
       ? NextResponse.redirect(new URL("/cart?err=unknown_action", req.url))
       : NextResponse.json({ ok:false, error:"unknown action" }, { status:400 });
-  } catch (e: any) {
-    return NextResponse.json({ ok:false, error: e?.message || "server-error" }, { status:500 });
+  } catch (e: unknown) {
+    const msg = (e instanceof Error) ? e.message : "server-error";
+    return NextResponse.json({ ok:false, error: msg }, { status:500 });
   }
 }

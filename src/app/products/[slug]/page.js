@@ -7,7 +7,7 @@ function fmtTRY(k){ const n=Number(k||0)/100; return n.toLocaleString("tr-TR",{s
 export const dynamic = "force-dynamic";
 
 export default async function ProductDetail(props) {
-  const { slug } = await props.params;           // Next 15
+  const { slug } = await props.params; // Next 15
   const rows = await query("SELECT id,slug,name,description,price,imageUrl,product_code,isActive FROM products WHERE slug=? LIMIT 1",[slug]);
   if (!rows.length || !rows[0].isActive) return notFound();
   const p = rows[0];
@@ -45,7 +45,7 @@ export default async function ProductDetail(props) {
               <input id="qty" name="qty" type="number" min="1" defaultValue="1"
                      className="bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 w-24" />
             </div>
-            <button type="submit" className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90">
+            <button type="submit" className="px-4 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90 cursor-pointer">
               Sepete ekle
             </button>
           </form>

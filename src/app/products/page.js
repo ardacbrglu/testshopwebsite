@@ -35,14 +35,17 @@ export default async function ProductsPage() {
               )}
 
               <div className="flex gap-2">
-                <Link className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm" href={`/products/${p.slug}`}>View</Link>
+                <Link className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm cursor-pointer" href={`/products/${p.slug}`}>
+                  Gör
+                </Link>
 
                 <form action="/api/cart" method="post" className="ml-auto flex items-center gap-2">
                   <input type="hidden" name="action" value="add" />
                   <input type="hidden" name="slug" value={p.slug} />
                   <input name="qty" type="number" min="1" defaultValue="1"
                          className="bg-neutral-900 border border-neutral-800 rounded-xl px-2 py-1 w-16" />
-                  <button className="px-3 py-2 rounded-xl bg-white text-black text-sm hover:opacity-90" type="submit">
+                  <button type="submit"
+                          className="px-3 py-2 rounded-xl bg-white text-black text-sm hover:opacity-90 cursor-pointer">
                     Sepete ekle
                   </button>
                 </form>
