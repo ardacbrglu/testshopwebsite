@@ -1,43 +1,83 @@
 // src/app/orders/page.js
-import { query } from "@/lib/db";
+"use client";
 
-function fmtTRY(k){ const n=(Number(k||0)/100); return n.toLocaleString("tr-TR",{style:"currency",currency:"TRY",minimumFractionDigits:2,maximumFractionDigits:2}); }
+import { useState } from "react";
 
-export default async function OrdersPage({ searchParams }) {
-  const sp = await searchParams;
-  const rows = await query(
-    `SELECT id, order_number, email, total_amount, discount_total, created_at AS createdAt
-     FROM orders
-     ORDER BY id DESC
-     LIMIT 50`
-  );
+function toCurrencyTRY(minor) {
+  return new Intl.NumberFormat("tr-TR", {
+    style: "currency",
+    currency: "TRY",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format((minor ?? 0) / 100);
+}
 
-  const toastScript = sp?.ok ? `
-    window.addEventListener("load",()=> {
-      window.dispatchEvent(new CustomEvent("toast",{ detail:{ type:"success", text:"Satın alım başarılı." } }));
-      const url=new URL(location.href); url.searchParams.delete("ok"); url.searchParams.delete("ord");
-      history.replaceState(null,"",url.toString());
-    });
-  ` : "";
+export default function OrdersPage() {
+  const [email, setEmail] = useState("");
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/orders?email=${encodeURIComponent(email)}`, { cache: "no-store" });
+      const json = await res.json();
+      setOrders(json.orders || []);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8">
+    <main className="max-w-4xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-semibold mb-6">Satın Alımlarım</h1>
 
-      {rows.length === 0 && <div className="text-neutral-400">Kayıt bulunamadı.</div>}
+      <form onSubmit={handleSubmit} className="flex items-center gap-3">
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          type="email"
+          required
+          placeholder="E-posta adresini gir (kayıtlı siparişleri getir)"
+          className="w-[360px] max-w-full rounded-lg border border-white/10 bg-neutral-800 px-3 py-2 text-sm"
+        />
+        <button className="rounded-xl px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-500 transition">
+          {loading ? "Yükleniyor..." : "Siparişleri Getir"}
+        </button>
+      </form>
 
-      <div className="space-y-3">
-        {rows.map(r=>(
-          <div key={r.id} className="p-4 rounded-xl bg-neutral-900 border border-neutral-800">
-            <div className="font-medium">#{r.order_number}</div>
-            <div className="text-sm text-neutral-400">{new Date(r.createdAt).toLocaleString("tr-TR")}</div>
-            <div className="mt-1 text-sm">E-posta: {r.email}</div>
-            <div className="mt-1">Tutar: <b>{fmtTRY(r.total_amount)}</b> {Number(r.discount_total)>0 && <span className="text-green-400 ml-2">İndirim: −{fmtTRY(r.discount_total)}</span>}</div>
+      <div className="mt-6 space-y-4">
+        {orders.length === 0 && !loading && <div className="text-neutral-400">Kayıt bulunamadı.</div>}
+        {orders.map((o) => (
+          <div key={o.id} className="rounded-xl border border-white/10 bg-neutral-900/60 p-4">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">{o.orderNumber}</div>
+              <div className="text-sm text-neutral-400">
+                {new Date(o.createdAt).toLocaleString("tr-TR")}
+              </div>
+            </div>
+            <div className="mt-2 text-sm text-neutral-300">
+              Toplam: <b>{toCurrencyTRY(o.totalAmount)}</b>
+              {o.discountTotal > 0 && (
+                <span className="ml-3">
+                  İndirim: <b>{toCurrencyTRY(o.discountTotal)}</b>
+                </span>
+              )}
+            </div>
+            <div className="mt-3 border-t border-white/10 pt-3 space-y-1">
+              {o.items.map((it, idx) => (
+                <div key={idx} className="flex items-center justify-between text-sm">
+                  <div>
+                    {it.product_name} <span className="text-neutral-400">x{it.quantity}</span>
+                  </div>
+                  <div>{toCurrencyTRY(it.unit_price)}</div>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
-
-      {toastScript && <script dangerouslySetInnerHTML={{ __html: toastScript }} />}
     </main>
   );
 }
