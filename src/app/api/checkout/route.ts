@@ -10,12 +10,38 @@ import { activeDiscountPctForSlugServer, productCodeForSlug } from "@/lib/attrib
 import { sendCaboWebhook, type CaboItem } from "@/lib/cabo";
 
 interface CartEmailRow { email: string | null; }
+
 interface CheckoutItemRow {
-  id: number; quantity: number;
-  productId: number; slug: string; name: string; price: number; product_code: string;
+  id: number;
+  quantity: number;
+  productId: number;
+  slug: string;
+  name: string;
+  price: number;        // kuruş
+  product_code: string; // DB alanı
 }
 
-const SCOPE = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase(); // "sitewide" | "landing"
+interface ComputedLine {
+  it: CheckoutItemRow;
+  pct: number;
+  unit: number;
+  unitAfter: number;
+  qty: number;
+  lineGross: number;
+  lineNet: number;
+}
+
+interface TxResult {
+  orderNumber: string;
+  orderId: number;
+  total: number;
+  discount_total: number;
+  email: string;
+  computed: ComputedLine[];
+}
+
+const SCOPE: "sitewide" | "landing" =
+  (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase() as "sitewide" | "landing";
 
 function makeOrderNumber(): string {
   return `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -45,22 +71,22 @@ export async function POST(req: Request) {
   }
 
   const store = await cookies();
-  const wid = store.get("cabo_wid")?.value || null; // caboRef olarak
+  const wid = store.get("cabo_wid")?.value || null; // ref token
   const lid = store.get("cabo_lid")?.value || null;
 
   // İndirim yüzdeleri ve MAP kodları
   const [discountPcts, mapCodes] = await Promise.all([
-    Promise.all(itemsDb.map((it) => activeDiscountPctForSlugServer(it.slug))),
-    Promise.all(itemsDb.map((it) => Promise.resolve(productCodeForSlug(it.slug)))),
+    Promise.all(itemsDb.map((it: CheckoutItemRow) => activeDiscountPctForSlugServer(it.slug))),
+    Promise.all(itemsDb.map((it: CheckoutItemRow) => Promise.resolve(productCodeForSlug(it.slug)))),
   ]);
 
-  const result = await withTransaction(async (conn: PoolConnection) => {
+  const result: TxResult = await withTransaction(async (conn: PoolConnection) => {
     const orderNumber = makeOrderNumber();
 
     let gross = 0;
     let discountTotal = 0;
 
-    const computed = itemsDb.map((it, idx) => {
+    const computed: ComputedLine[] = itemsDb.map((it: CheckoutItemRow, idx: number) => {
       const pct = discountPcts[idx] ?? 0;
       const unit = Number(it.price);
       const unitAfter = pct > 0 ? unit - Math.round(unit * (pct / 100)) : unit;
@@ -107,53 +133,70 @@ export async function POST(req: Request) {
     await conn.execute("DELETE FROM cart_items WHERE cart_id = ?", [cartId]);
     await conn.execute("UPDATE carts SET email = ? WHERE id = ?", [email, cartId]);
 
-    return { orderNumber, orderId, total: netTotal, discount_total: discountTotal, email };
+    return {
+      orderNumber,
+      orderId,
+      total: netTotal,
+      discount_total: discountTotal,
+      email,
+      computed,
+    } as TxResult;
   });
 
-  // --- Cabo S2S webhook ---
+  // --- Cabo S2S webhook (debug log’lu) ---
   try {
-    // Ref (wid) yoksa post etmeyiz (atribüsyon yok demektir)
-    if (wid) {
-      const caboItems: CaboItem[] = itemsDb
-        .map((it, idx) => {
-          const code = mapCodes[idx];                // sadece MAP’te olanlar "anlaşmalı"
-          if (!code) return null;
+    if (!wid) {
+      console.warn("[CABO WEBHOOK] skip: wid(token) yok");
+    } else {
+      const caboItemsOrNull: Array<CaboItem | null> = result.computed
+        .map((c: ComputedLine) => {
+          const idx = itemsDb.findIndex((row: CheckoutItemRow) => row.productId === c.it.productId);
+          const code = mapCodes[idx];
+          const pct = c.pct;
 
-          const pct = discountPcts[idx] ?? 0;
-          // LANDING modunda: sadece indirim uygulanan (pct>0) kalemleri gönder
-          if (SCOPE === "landing" && pct <= 0) return null;
-
-          const unit = Number(it.price);
-          const unitAfter = pct > 0 ? unit - Math.round(unit * (pct / 100)) : unit;
-          const qty = Number(it.quantity);
+          if (!code) return null;                       // anlaşmalı değil
+          if (SCOPE === "landing" && pct <= 0) return null; // landing: sadece indirimli
 
           return {
             productCode: code,
-            productId: it.productId,      // opsiyonel
-            productSlug: it.slug,         // opsiyonel
-            quantity: qty,
-            unitPriceCharged: unitAfter,  // indirimli birim
-            lineTotal: unitAfter * qty,
-          } as CaboItem;
-        })
-        .filter((x): x is CaboItem => !!x);
+            productId: c.it.productId,
+            productSlug: c.it.slug,
+            quantity: c.qty,
+            unitPriceCharged: c.unitAfter,
+            lineTotal: c.unitAfter * c.qty,
+          } satisfies CaboItem;
+        });
 
-      if (caboItems.length > 0) {
+      const caboItems = caboItemsOrNull.filter(
+        (item: CaboItem | null): item is CaboItem => item !== null
+      );
+
+      if (caboItems.length === 0) {
+        console.warn("[CABO WEBHOOK] skip: gönderilecek item yok (scope=%s)", SCOPE);
+      } else {
+        console.log("[CABO WEBHOOK] sending", caboItems.length, "item(s) | scope:", SCOPE);
         await sendCaboWebhook({
           keyId: process.env.CABO_KEY_ID || "UNKNOWN",
           event: "purchase",
           orderNumber: result.orderNumber,
-          email,
+          email: result.email,
           totalAmount: result.total,
           discountTotal: result.discount_total,
           items: caboItems,
-          caboRef: wid, // platform tarafında token/caboRef olarak okunur
+          caboRef: wid,
         });
       }
     }
-  } catch {
-    // postback hatası siparişi bozmasın; sessiz geç
+  } catch (e) {
+    console.error("[CABO WEBHOOK] error:", (e as Error).message);
   }
 
-  return NextResponse.json({ ok: true, ...result, caboRef: wid, lid });
+  return NextResponse.json({
+    ok: true,
+    orderNumber: result.orderNumber,
+    orderId: result.orderId,
+    total: result.total,
+    caboRef: wid,
+    lid,
+  });
 }
