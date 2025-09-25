@@ -1,17 +1,26 @@
-// src/app/products/page.tsx
 /* eslint-disable @next/next/no-img-element */
 import { query } from "@/lib/db";
 import { toCurrencyTRY } from "@/lib/format";
 import AddToCart from "@/components/AddToCart";
 
-async function getProducts() {
-  return await query(
+interface ProductRow {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  price: number;
+  imageUrl: string;
+}
+
+async function getProducts(): Promise<ProductRow[]> {
+  const rows = (await query(
     "SELECT id, slug, name, description, price, imageUrl FROM products WHERE isActive = 1 ORDER BY id ASC"
-  );
+  )) as unknown as ProductRow[];
+  return rows;
 }
 
 export default async function ProductsPage() {
-  const products = (await getProducts()) as any[];
+  const products = await getProducts();
 
   return (
     <main className="max-w-6xl mx-auto px-4 py-8">

@@ -6,46 +6,72 @@ import { NextResponse } from "next/server";
 import { getOrCreateCartId, getCartIdOptional } from "@/lib/cart";
 import { query } from "@/lib/db";
 
+/* ----------------------------- types ----------------------------- */
+
+type Body = Record<string, unknown>;
+
+interface ProductIdRow {
+  id: number;
+}
+
+interface CartItemExistingRow {
+  id: number;
+  quantity: number;
+}
+
+interface CartJoinRow {
+  id: number;
+  productId: number;
+  quantity: number;
+  name: string;
+  slug: string;
+  price: number;
+  imageUrl: string;
+  product_code: string;
+}
+
+interface CartEmailRow {
+  email: string | null;
+}
+
 /* ----------------------------- helpers ----------------------------- */
 
-// Tüm içerik tiplerini destekleyen gövde okuyucu:
-// - application/json
-// - application/x-www-form-urlencoded
-// - multipart/form-data
-// - düz querystring/text (fallback)
-async function readBody(req: Request): Promise<Record<string, any>> {
+// Tüm içerik tiplerini destekler (json/form/text)
+async function readBody(req: Request): Promise<Body> {
   const ct = req.headers.get("content-type") || "";
 
   // JSON
   if (ct.includes("application/json")) {
     try {
-      const json = await req.json();
-      return (json && typeof json === "object") ? json : {};
+      const json = (await req.json()) as unknown;
+      return (json && typeof json === "object") ? (json as Body) : {};
     } catch {
       return {};
     }
   }
 
-  // Form-data & URL-encoded
+  // Form-data / urlencoded
   if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
     try {
       const fd = await req.formData();
-      return Object.fromEntries(fd.entries());
+      const obj: Body = {};
+      fd.forEach((v, k) => (obj[k] = v));
+      return obj;
     } catch {
-      // dev: bazı ortamlar urlencoded'ı text olarak bırakabilir → alttaki fallback çalışır
+      /* fallthrough to text */
     }
   }
 
-  // Fallback: text → önce JSON dene, olmazsa querystring gibi çöz
+  // Text (fallback): önce JSON dene, sonra querystring
   try {
     const txt = await req.text();
     if (!txt) return {};
     try {
-      const json = JSON.parse(txt);
-      return (json && typeof json === "object") ? json : {};
+      const json = JSON.parse(txt) as unknown;
+      return (json && typeof json === "object") ? (json as Body) : {};
     } catch {
       const params = new URLSearchParams(txt);
-      const obj: Record<string, any> = {};
+      const obj: Body = {};
       for (const [k, v] of params.entries()) obj[k] = v;
       return obj;
     }
@@ -54,17 +80,20 @@ async function readBody(req: Request): Promise<Record<string, any>> {
   }
 }
 
-async function resolveProductId(body: Record<string, any>): Promise<number | null> {
-  // Öncelik: productId → yoksa slug → DB’den id bul
-  if (body.productId) return Number(body.productId);
-  if (body.slug) {
-    const [row]: any[] = await query("SELECT id FROM products WHERE slug = ? LIMIT 1", [String(body.slug)]);
+async function resolveProductId(body: Body): Promise<number | null> {
+  const pid = body.productId ?? body.productID ?? body.pid;
+  if (pid != null) return Number(pid);
+
+  const slug = body.slug;
+  if (typeof slug === "string" && slug) {
+    const rows = (await query("SELECT id FROM products WHERE slug = ? LIMIT 1", [slug])) as unknown as ProductIdRow[];
+    const row = rows[0];
     if (row?.id) return Number(row.id);
   }
   return null;
 }
 
-function normalizeQty(v: any, fallback = 1): number {
+function normalizeQty(v: unknown, fallback = 1): number {
   const n = Number(v ?? fallback);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
@@ -84,9 +113,10 @@ export async function GET() {
      JOIN products p ON p.id = ci.product_id
      WHERE ci.cart_id = ?`,
     [cartId]
-  )) as any[];
+  )) as unknown as CartJoinRow[];
 
-  const [cartRow]: any[] = await query("SELECT email FROM carts WHERE id = ?", [cartId]);
+  const cartRows = (await query("SELECT email FROM carts WHERE id = ?", [cartId])) as unknown as CartEmailRow[];
+  const cartRow = cartRows[0];
 
   let total = 0;
   for (const it of items) total += Number(it.price) * Number(it.quantity);
@@ -100,7 +130,6 @@ export async function GET() {
 // POST /api/cart  → ekle (JSON veya form-encoded)
 export async function POST(req: Request) {
   const body = await readBody(req);
-  // Eski formlar: action=add, slug, qty
   const quantity = normalizeQty(body.quantity ?? body.qty ?? 1);
   const productId = await resolveProductId(body);
 
@@ -111,19 +140,22 @@ export async function POST(req: Request) {
   const cartId = await getOrCreateCartId();
 
   // ürün var mı?
-  const [p]: any[] = await query("SELECT id FROM products WHERE id = ? AND isActive = 1", [productId]);
-  if (!p) return NextResponse.json({ error: "Ürün bulunamadı" }, { status: 404 });
+  const prodRows = (await query(
+    "SELECT id FROM products WHERE id = ? AND isActive = 1",
+    [productId]
+  )) as unknown as ProductIdRow[];
+  if (!prodRows[0]) return NextResponse.json({ error: "Ürün bulunamadı" }, { status: 404 });
 
-  // manuel upsert (unique constraint yok)
-  const [existing]: any[] = await query(
+  // manuel upsert
+  const existRows = (await query(
     "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND product_id = ?",
     [cartId, productId]
-  );
+  )) as unknown as CartItemExistingRow[];
 
-  if (existing) {
+  if (existRows[0]) {
     await query("UPDATE cart_items SET quantity = ? WHERE id = ? AND cart_id = ?", [
-      Number(existing.quantity) + quantity,
-      existing.id,
+      Number(existRows[0].quantity) + quantity,
+      existRows[0].id,
       cartId,
     ]);
   } else {
@@ -147,8 +179,8 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Miktar ≥ 1 olmalı" }, { status: 400 });
   }
 
-  const itemId = body.itemId ? Number(body.itemId) : undefined;
-  const productId = body.productId ? Number(body.productId) : undefined;
+  const itemId = body.itemId != null ? Number(body.itemId) : undefined;
+  const productId = body.productId != null ? Number(body.productId) : undefined;
 
   if (itemId) {
     await query("UPDATE cart_items SET quantity = ? WHERE id = ? AND cart_id = ?", [quantity, itemId, cartId]);
@@ -167,10 +199,10 @@ export async function PUT(req: Request) {
   return NextResponse.json({ error: "itemId veya productId gerekli" }, { status: 400 });
 }
 
-// PATCH /api/cart  → email kaydet (JSON veya form-encoded)
+// PATCH /api/cart  → email kaydet
 export async function PATCH(req: Request) {
   const body = await readBody(req);
-  const email = String(body.email || "").trim();
+  const email = typeof body.email === "string" ? body.email.trim() : "";
   const cartId = await getOrCreateCartId();
 
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
@@ -179,8 +211,8 @@ export async function PATCH(req: Request) {
 
   await query("UPDATE carts SET email = ? WHERE id = ?", [email, cartId]);
 
-  const [c]: any[] = await query("SELECT id FROM customers WHERE email = ? LIMIT 1", [email]);
-  if (!c) await query("INSERT INTO customers (email) VALUES (?)", [email]);
+  const custRows = (await query("SELECT id FROM customers WHERE email = ? LIMIT 1", [email])) as unknown as ProductIdRow[];
+  if (!custRows[0]) await query("INSERT INTO customers (email) VALUES (?)", [email]);
 
   return NextResponse.json({ ok: true, cartId, email });
 }
@@ -188,8 +220,8 @@ export async function PATCH(req: Request) {
 // DELETE /api/cart  → satır sil / tümünü temizle
 export async function DELETE(req: Request) {
   const body = await readBody(req);
-  const itemId = body.itemId ? Number(body.itemId) : undefined;
-  const productId = body.productId ? Number(body.productId) : undefined;
+  const itemId = body.itemId != null ? Number(body.itemId) : undefined;
+  const productId = body.productId != null ? Number(body.productId) : undefined;
 
   const cartId = await getCartIdOptional();
   if (!cartId) return NextResponse.json({ ok: true });

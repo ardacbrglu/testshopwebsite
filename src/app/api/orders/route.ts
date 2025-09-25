@@ -5,7 +5,23 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 
-// GET /api/orders?email=...
+interface OrderRow {
+  id: number;
+  order_number: string;
+  total_amount: number;
+  discount_total: number;
+  created_at: string;
+}
+
+interface OrderItemRow {
+  order_id: number;
+  product_slug: string;
+  product_name: string;
+  quantity: number;
+  unit_price: number;
+  unit_price_before: number;
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const email = (searchParams.get("email") || "").trim();
@@ -16,10 +32,10 @@ export async function GET(req: Request) {
   const orders = (await query(
     "SELECT id, order_number, total_amount, discount_total, created_at FROM orders WHERE email = ? ORDER BY id DESC",
     [email]
-  )) as any[];
+  )) as unknown as OrderRow[];
 
-  const ids = orders.map((o: any) => o.id);
-  const itemsByOrder = new Map<number, any[]>();
+  const ids = orders.map((o) => o.id);
+  const itemsByOrder = new Map<number, OrderItemRow[]>();
 
   if (ids.length) {
     const rows = (await query(
@@ -29,7 +45,7 @@ export async function GET(req: Request) {
        WHERE order_id IN (${ids.map(() => "?").join(",")})
        ORDER BY id ASC`,
       ids
-    )) as any[];
+    )) as unknown as OrderItemRow[];
 
     for (const r of rows) {
       const arr = itemsByOrder.get(r.order_id) || [];
@@ -38,13 +54,13 @@ export async function GET(req: Request) {
     }
   }
 
-  const payload = (orders as any[]).map((o: any) => ({
+  const payload = orders.map((o) => ({
     id: o.id,
     orderNumber: o.order_number,
     createdAt: o.created_at,
     totalAmount: o.total_amount,
     discountTotal: o.discount_total,
-    items: itemsByOrder.get(o.id) || [],
+    items: itemsByOrder.get(o.id) ?? [],
   }));
 
   return NextResponse.json({ email, orders: payload }, { headers: { "Cache-Control": "no-store" } });

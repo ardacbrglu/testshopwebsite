@@ -24,14 +24,14 @@ export default function AddToCart({ productId, unitPrice }: Props) {
         body: JSON.stringify({ productId, quantity: qty }),
       });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j?.error || "Sepete eklenemedi");
       }
-      // Basit geri bildirim
-      // İstersen Toast’a bağlayabilirsin.
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || "Hata");
+      // Başarılı: burada istersen toast göster
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Hata";
+      // eslint-disable-next-line no-alert
+      alert(msg);
     } finally {
       setBusy(false);
     }
@@ -47,7 +47,9 @@ export default function AddToCart({ productId, unitPrice }: Props) {
           onChange={(e) => setQty(Math.max(1, Number(e.target.value || 1)))}
           className="w-16 bg-transparent text-center outline-none"
         />
-        <span className="text-sm text-neutral-300">Toplam: <b>{toCurrencyTRY(total)}</b></span>
+        <span className="text-sm text-neutral-300">
+          Toplam: <b>{toCurrencyTRY(total)}</b>
+        </span>
       </div>
 
       <button

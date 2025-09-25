@@ -6,12 +6,26 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { query, withTransaction } from "@/lib/db";
 import { getOrCreateCartId } from "@/lib/cart";
+import type { PoolConnection, ResultSetHeader } from "mysql2/promise";
+
+interface CartEmailRow {
+  email: string | null;
+}
+interface CheckoutItemRow {
+  id: number;            // cart item id
+  quantity: number;
+  productId: number;
+  slug: string;
+  name: string;
+  price: number;
+  product_code: string;
+}
 
 async function getDiscountPctFromCookie(): Promise<number> {
   const store = await cookies();
   const raw = store.get("cabo_discount_pct")?.value;
   const pct = raw ? Number(raw) : 0;
-  return isFinite(pct) && pct > 0 ? Math.min(pct, 90) : 0;
+  return Number.isFinite(pct) && pct > 0 ? Math.min(pct, 90) : 0;
 }
 
 function makeOrderNumber(): string {
@@ -19,11 +33,11 @@ function makeOrderNumber(): string {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as { email?: string };
+  const body = (await req.json().catch(() => ({}))) as { email?: string };
   const cartId = await getOrCreateCartId();
 
-  const [cart]: any[] = await query("SELECT email FROM carts WHERE id = ?", [cartId]);
-  const email = (body.email || cart?.email || "").trim();
+  const cartRows = (await query("SELECT email FROM carts WHERE id = ?", [cartId])) as unknown as CartEmailRow[];
+  const email = (body.email || cartRows[0]?.email || "").trim();
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
     return NextResponse.json({ error: "Önce geçerli e-posta girip kaydedin." }, { status: 400 });
   }
@@ -35,7 +49,7 @@ export async function POST(req: Request) {
      JOIN products p ON p.id = ci.product_id
      WHERE ci.cart_id = ?`,
     [cartId]
-  )) as any[];
+  )) as unknown as CheckoutItemRow[];
 
   if (!items?.length) {
     return NextResponse.json({ error: "Sepet boş." }, { status: 400 });
@@ -43,7 +57,7 @@ export async function POST(req: Request) {
 
   const pct = await getDiscountPctFromCookie();
 
-  const result = await withTransaction(async (conn: any) => {
+  const result = await withTransaction(async (conn: PoolConnection) => {
     const orderNumber = makeOrderNumber();
 
     let gross = 0;
@@ -57,12 +71,14 @@ export async function POST(req: Request) {
 
     const netTotal = gross - discountTotal;
 
-    const [res] = await conn.execute(
+    // orders
+    const [res] = await conn.execute<ResultSetHeader>(
       "INSERT INTO orders (order_number, email, total_amount, discount_total) VALUES (?, ?, ?, ?)",
       [orderNumber, email, netTotal, discountTotal]
     );
-    const orderId = (res?.insertId ?? null) as number;
+    const orderId = res.insertId;
 
+    // order_items
     for (const it of items) {
       const unitPrice = Number(it.price);
       const unitPriceAfter = pct > 0 ? unitPrice - Math.round(unitPrice * (pct / 100)) : unitPrice;
