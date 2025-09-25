@@ -5,13 +5,21 @@ import { toCurrencyTRY } from "@/lib/format";
 
 type Props = {
   productId: number;
-  unitPrice: number; // kuruş
+  unitPrice: number;     // kuruş
+  discountPct?: number;  // 0-90
 };
 
-export default function AddToCart({ productId, unitPrice }: Props) {
+export default function AddToCart({ productId, unitPrice, discountPct = 0 }: Props) {
   const [qty, setQty] = useState<number>(1);
   const [busy, setBusy] = useState(false);
-  const total = useMemo(() => unitPrice * qty, [unitPrice, qty]);
+
+  const effectiveUnit = useMemo(
+    () => (discountPct > 0 ? unitPrice - Math.round(unitPrice * (discountPct / 100)) : unitPrice),
+    [unitPrice, discountPct]
+  );
+
+  const fullTotal = useMemo(() => unitPrice * qty, [unitPrice, qty]);
+  const discountedTotal = useMemo(() => effectiveUnit * qty, [effectiveUnit, qty]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,11 +35,9 @@ export default function AddToCart({ productId, unitPrice }: Props) {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(j?.error || "Sepete eklenemedi");
       }
-      // Başarılı: burada istersen toast göster
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Hata";
-      // eslint-disable-next-line no-alert
-      alert(msg);
+      alert("Ürün sepete eklendi.");
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Hata");
     } finally {
       setBusy(false);
     }
@@ -47,9 +53,19 @@ export default function AddToCart({ productId, unitPrice }: Props) {
           onChange={(e) => setQty(Math.max(1, Number(e.target.value || 1)))}
           className="w-16 bg-transparent text-center outline-none"
         />
-        <span className="text-sm text-neutral-300">
-          Toplam: <b>{toCurrencyTRY(total)}</b>
-        </span>
+        {discountPct > 0 ? (
+          <div className="text-sm">
+            <div className="flex items-baseline gap-2">
+              <span className="text-neutral-400 line-through">{toCurrencyTRY(fullTotal)}</span>
+              <span className="font-semibold">{toCurrencyTRY(discountedTotal)}</span>
+              <span className="text-emerald-400 text-xs">-%{discountPct}</span>
+            </div>
+          </div>
+        ) : (
+          <span className="text-sm text-neutral-300">
+            Toplam: <b>{toCurrencyTRY(fullTotal)}</b>
+          </span>
+        )}
       </div>
 
       <button
