@@ -1,25 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Cabo ref: bazen ?wid=..., bazen ?token=... gelebiliyor.
+// Hepsini yakalayıp çereze yazıyoruz, sonra URL'i temizliyoruz.
 export function middleware(req: NextRequest) {
   const url = req.nextUrl;
-  const wid = url.searchParams.get("wid");
-  const lid = url.searchParams.get("lid");
 
-  if (!wid && !lid) return NextResponse.next();
+  const wid =
+    url.searchParams.get("wid") ||
+    url.searchParams.get("token") || // <- önemli düzeltme
+    url.searchParams.get("w") ||
+    url.searchParams.get("ref") ||
+    url.searchParams.get("cwid");
 
-  // wid/lid paramlarını URL'den temizle
+  const lid =
+    url.searchParams.get("lid") ||
+    url.searchParams.get("l") ||
+    url.searchParams.get("lander") ||
+    url.searchParams.get("landingId");
+
+  if (!wid && !lid) {
+    return NextResponse.next();
+  }
+
+  // Parametreleri URL'den çıkarıp temiz bir adrese yönlendir
   const cleaned = new URL(url.toString());
-  if (wid) cleaned.searchParams.delete("wid");
-  if (lid) cleaned.searchParams.delete("lid");
+  ["wid", "token", "w", "ref", "cwid", "lid", "l", "lander", "landingId"].forEach((k) =>
+    cleaned.searchParams.delete(k)
+  );
 
   const res = NextResponse.redirect(cleaned, 302);
-  // Oturum (session) çerezi; süre vermiyoruz
-  if (wid) res.cookies.set("cabo_wid", wid, { httpOnly: false, sameSite: "lax", path: "/" });
-  if (lid) res.cookies.set("cabo_lid", lid, { httpOnly: false, sameSite: "lax", path: "/" });
+
+  // Session cookie (SameSite=Lax top-level gezintide çalışır)
+  if (wid) res.cookies.set("cabo_wid", wid, { path: "/", sameSite: "lax" });
+  if (lid) res.cookies.set("cabo_lid", lid, { path: "/", sameSite: "lax" });
+
   return res;
 }
 
 export const config = {
-  // Her sayfada çalışsın, ama static dosyaları ve API health’i pas geç
+  // Tüm sayfalarda çalışsın; statik dosyaları ve özel endpointi hariç tut.
   matcher: ["/((?!_next|favicon.ico|cabo-init.js).*)"],
 };
