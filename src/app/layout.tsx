@@ -21,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="container py-2">
             <NavBar />
           </div>
+          
         </header>
 
         <ToastBus />
@@ -30,7 +31,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <footer className="container py-8 text-sm text-neutral-400">
           © Test Shop Sim
         </footer>
+        
+        <script defer src="/cabo-init.js"></script>
+
       </body>
     </html>
   );
 }
+
