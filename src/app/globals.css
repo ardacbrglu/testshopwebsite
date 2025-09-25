@@ -1,6 +1,7 @@
-/* app/globals.css */
-/* Tailwind v4 - tek satır import */
-@import "tailwindcss";
+/* Tailwind v3 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 html, body, :root { height: 100%; }
 
