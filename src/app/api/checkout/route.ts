@@ -40,6 +40,16 @@ interface TxResult {
   computed: ComputedLine[];
 }
 
+export interface WebhookReport {
+  attempted: boolean;        // deneme oldu mu?
+  sent: boolean;             // HTTP 2xx döndü mü?
+  items: number;             // gönderilen kalem sayısı
+  reason?: string;           // gönderilmediyse sebep
+  status?: number;           // HTTP status
+  responseText?: string;     // yanıt gövdesi (kısaltmadan düz)
+  url?: string;
+}
+
 const SCOPE: "sitewide" | "landing" =
   (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase() as "sitewide" | "landing";
 
@@ -140,42 +150,44 @@ export async function POST(req: Request) {
       discount_total: discountTotal,
       email,
       computed,
-    } as TxResult;
+    } satisfies TxResult;
   });
 
-  // --- Cabo S2S webhook (debug log’lu) ---
+  // --- Cabo S2S webhook (rapor topla) ---
+  const report: WebhookReport = { attempted: false, sent: false, items: 0 };
+
   try {
     if (!wid) {
-      console.warn("[CABO WEBHOOK] skip: wid(token) yok");
+      report.attempted = false;
+      report.reason = "no_wid_token";
     } else {
-      const caboItemsOrNull: Array<CaboItem | null> = result.computed
-        .map((c: ComputedLine) => {
-          const idx = itemsDb.findIndex((row: CheckoutItemRow) => row.productId === c.it.productId);
-          const code = mapCodes[idx];
-          const pct = c.pct;
+      const caboItemsOrNull: Array<CaboItem | null> = result.computed.map((c: ComputedLine) => {
+        const idx = itemsDb.findIndex((row: CheckoutItemRow) => row.productId === c.it.productId);
+        const code = mapCodes[idx];
+        const pct = c.pct;
 
-          if (!code) return null;                       // anlaşmalı değil
-          if (SCOPE === "landing" && pct <= 0) return null; // landing: sadece indirimli
+        if (!code) return null;                         // anlaşmalı değil
+        if (SCOPE === "landing" && pct <= 0) return null; // landing: sadece indirimli olan
 
-          return {
-            productCode: code,
-            productId: c.it.productId,
-            productSlug: c.it.slug,
-            quantity: c.qty,
-            unitPriceCharged: c.unitAfter,
-            lineTotal: c.unitAfter * c.qty,
-          } satisfies CaboItem;
-        });
+        return {
+          productCode: code,
+          productId: c.it.productId,
+          productSlug: c.it.slug,
+          quantity: c.qty,
+          unitPriceCharged: c.unitAfter,
+          lineTotal: c.unitAfter * c.qty,
+        } as CaboItem;
+      });
 
-      const caboItems = caboItemsOrNull.filter(
-        (item: CaboItem | null): item is CaboItem => item !== null
-      );
-
+      const caboItems = caboItemsOrNull.filter((i): i is CaboItem => i !== null);
       if (caboItems.length === 0) {
-        console.warn("[CABO WEBHOOK] skip: gönderilecek item yok (scope=%s)", SCOPE);
+        report.attempted = false;
+        report.reason = "no_items_for_webhook";
       } else {
-        console.log("[CABO WEBHOOK] sending", caboItems.length, "item(s) | scope:", SCOPE);
-        await sendCaboWebhook({
+        report.attempted = true;
+        report.items = caboItems.length;
+
+        const res = await sendCaboWebhook({
           keyId: process.env.CABO_KEY_ID || "UNKNOWN",
           event: "purchase",
           orderNumber: result.orderNumber,
@@ -185,10 +197,17 @@ export async function POST(req: Request) {
           items: caboItems,
           caboRef: wid,
         });
+
+        report.sent = res.ok;
+        report.status = res.status;
+        report.responseText = res.text;
+        report.url = res.url;
       }
     }
   } catch (e) {
-    console.error("[CABO WEBHOOK] error:", (e as Error).message);
+    report.attempted = true;
+    report.sent = false;
+    report.reason = (e as Error).message || "unknown_error";
   }
 
   return NextResponse.json({
@@ -198,5 +217,6 @@ export async function POST(req: Request) {
     total: result.total,
     caboRef: wid,
     lid,
+    webhook: report,
   });
 }
