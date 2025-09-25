@@ -1,13 +1,7 @@
 // src/lib/db.js
-// Sadece server ortamında kullanılmalı
-import mysql from "mysql2/promise.js"; // <-- .js eki kritik olabilir
+import mysql from "mysql2/promise.js";
 
 let pool;
-
-/**
- * DATABASE_URL örn:
- * mysql://root:PASS@caboose.proxy.rlwy.net:19502/railway
- */
 export function getPool() {
   if (!pool) {
     const url = new URL(process.env.DATABASE_URL);
