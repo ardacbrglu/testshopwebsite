@@ -3,43 +3,53 @@
 import { useEffect, useState } from "react";
 import { toCurrencyTRY } from "@/lib/format";
 
-type CartItem = {
+type CartItemPayload = {
   id: number;
   productId: number;
   quantity: number;
-  name: string;
   slug: string;
-  price: number; // kuruş
+  name: string;
   imageUrl: string;
+  product_code: string;
+
+  unitPrice: number;        // kuruş
+  discountPct: number;      // 0..90
+  unitPriceAfter: number;   // kuruş
+
+  lineGross: number;        // unitPrice * qty
+  lineDiscount: number;     // lineGross - lineNet
+  lineNet: number;          // unitPriceAfter * qty
+};
+
+type CartResponse = {
+  cartId: number;
+  email: string | null;
+  items: CartItemPayload[];
+  totals: { gross: number; discountTotal: number; net: number };
 };
 
 export default function CartPage() {
   const [email, setEmail] = useState("");
-  const [items, setItems] = useState<CartItem[]>([]);
+  const [items, setItems] = useState<CartItemPayload[]>([]);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState<Record<number, number>>({}); // itemId -> qty
-
-  const total = items.reduce(
-    (acc, it) => acc + Number(it.price) * Number(it.quantity),
-    0
-  );
+  const [totals, setTotals] = useState<{ gross: number; discountTotal: number; net: number } | null>(null);
 
   async function load() {
     setLoading(true);
     try {
       const res = await fetch("/api/cart", { cache: "no-store" });
-      const j = await res.json();
+      const j = (await res.json()) as CartResponse;
       setEmail(j?.email ?? "");
       setItems(j?.items ?? []);
+      setTotals(j?.totals ?? null);
       setEdits({});
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   async function saveEmail() {
     const res = await fetch("/api/cart", {
@@ -115,75 +125,75 @@ export default function CartPage() {
 
       <div className="mt-6 space-y-3">
         {loading && <div className="text-neutral-400">Yükleniyor…</div>}
-        {!loading && items.length === 0 && (
-          <div className="text-neutral-400">Sepetiniz boş.</div>
-        )}
+        {!loading && items.length === 0 && <div className="text-neutral-400">Sepetiniz boş.</div>}
+
         {items.map((it) => {
           const currentQty = edits[it.id] ?? it.quantity;
-          const lineTotal = Number(it.price) * Number(currentQty);
+          const unitNow = it.discountPct > 0 ? it.unitPriceAfter : it.unitPrice;
+          const lineGrossView = it.unitPrice * currentQty;
+          const lineNetView = unitNow * currentQty;
+
           return (
-            <div
-              key={it.id}
-              className="flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900/60 p-3"
-            >
+            <div key={it.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900/60 p-3">
               <div className="flex items-center gap-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={it.imageUrl}
-                  alt={it.slug}
-                  className="w-16 h-16 rounded-lg object-cover"
-                />
+                <img src={it.imageUrl} alt={it.slug} className="w-16 h-16 rounded-lg object-cover" />
                 <div>
                   <div className="font-medium">{it.name}</div>
-                  <div className="text-sm text-neutral-400">
-                    Birim: {toCurrencyTRY(it.price)}
-                  </div>
+
+                  {/* Birim fiyat */}
+                  {it.discountPct > 0 ? (
+                    <div className="text-sm text-neutral-300">
+                      Birim: <span className="line-through text-neutral-400">{toCurrencyTRY(it.unitPrice)}</span>{" "}
+                      <b>{toCurrencyTRY(it.unitPriceAfter)}</b> <span className="text-emerald-400">-%{it.discountPct}</span>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-neutral-300">Birim: {toCurrencyTRY(it.unitPrice)}</div>
+                  )}
                 </div>
               </div>
 
+              {/* Adet + butonlar */}
               <div className="flex items-center gap-2">
                 <input
                   type="number"
                   min={1}
                   value={currentQty}
-                  onChange={(e) =>
-                    setEdits((m) => ({
-                      ...m,
-                      [it.id]: Math.max(1, Number(e.target.value || 1)),
-                    }))
-                  }
+                  onChange={(e) => setEdits((m) => ({ ...m, [it.id]: Math.max(1, Number(e.target.value || 1)) }))}
                   className="w-20 rounded-lg border border-white/10 bg-neutral-800 px-3 py-2 text-sm"
                 />
-                <button
-                  onClick={() => updateQty(it.id, currentQty)}
-                  className="rounded-lg px-3 py-2 text-sm bg-blue-600 hover:bg-blue-500"
-                >
+                <button onClick={() => updateQty(it.id, currentQty)} className="rounded-lg px-3 py-2 text-sm bg-blue-600 hover:bg-blue-500">
                   Güncelle
                 </button>
-                <button
-                  onClick={() => removeItem(it.id)}
-                  className="rounded-lg px-3 py-2 text-sm bg-red-600 hover:bg-red-500"
-                >
+                <button onClick={() => removeItem(it.id)} className="rounded-lg px-3 py-2 text-sm bg-red-600 hover:bg-red-500">
                   Kaldır
                 </button>
               </div>
 
+              {/* Satır toplamı */}
               <div className="text-sm">
-                Toplam: <b>{toCurrencyTRY(lineTotal)}</b>
+                {it.discountPct > 0 ? (
+                  <div className="flex items-baseline gap-2">
+                    <span className="line-through text-neutral-400">{toCurrencyTRY(lineGrossView)}</span>
+                    <b>{toCurrencyTRY(lineNetView)}</b>
+                  </div>
+                ) : (
+                  <>Toplam: <b>{toCurrencyTRY(lineNetView)}</b></>
+                )}
               </div>
             </div>
           );
         })}
       </div>
 
+      {/* Özet */}
       <div className="mt-6 flex items-center justify-between">
-        <div className="text-lg">
-          Genel Toplam: <span className="font-semibold">{toCurrencyTRY(total)}</span>
+        <div className="text-lg space-y-1">
+          <div>Ara Toplam: <b>{toCurrencyTRY(totals?.gross ?? 0)}</b></div>
+          <div>İndirim: <b className="text-emerald-400">- {toCurrencyTRY(totals?.discountTotal ?? 0)}</b></div>
+          <div>Ödenecek: <span className="font-semibold">{toCurrencyTRY(totals?.net ?? 0)}</span></div>
         </div>
-        <button
-          onClick={checkout}
-          className="rounded-xl px-5 py-2.5 text-sm font-semibold bg-indigo-600 hover:bg-indigo-500"
-        >
+        <button onClick={checkout} className="rounded-xl px-5 py-2.5 text-sm font-semibold bg-indigo-600 hover:bg-indigo-500">
           Satın Al
         </button>
       </div>

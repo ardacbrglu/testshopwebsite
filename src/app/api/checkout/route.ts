@@ -7,13 +7,15 @@ import { query, withTransaction } from "@/lib/db";
 import { getOrCreateCartId } from "@/lib/cart";
 import type { PoolConnection, ResultSetHeader } from "mysql2/promise";
 import { activeDiscountPctForSlugServer, productCodeForSlug } from "@/lib/attribution";
-import { sendCaboWebhook } from "@/lib/cabo";
+import { sendCaboWebhook, type CaboItem } from "@/lib/cabo";
 
 interface CartEmailRow { email: string | null; }
 interface CheckoutItemRow {
   id: number; quantity: number;
   productId: number; slug: string; name: string; price: number; product_code: string;
 }
+
+const SCOPE = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase(); // "sitewide" | "landing"
 
 function makeOrderNumber(): string {
   return `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Önce geçerli e-posta girip kaydedin." }, { status: 400 });
   }
 
-  const items = (await query(
+  const itemsDb = (await query(
     `SELECT ci.id, ci.quantity,
             p.id as productId, p.slug, p.name, p.price, p.product_code
      FROM cart_items ci
@@ -38,18 +40,19 @@ export async function POST(req: Request) {
     [cartId]
   )) as unknown as CheckoutItemRow[];
 
-  if (!items?.length) {
+  if (!itemsDb?.length) {
     return NextResponse.json({ error: "Sepet boş." }, { status: 400 });
   }
 
-  // wid/lid ve indirim yüzdelerini önceden çöz
   const store = await cookies();
-  const wid = store.get("cabo_wid")?.value;
-  const lid = store.get("cabo_lid")?.value;
+  const wid = store.get("cabo_wid")?.value || null; // caboRef olarak
+  const lid = store.get("cabo_lid")?.value || null;
 
-  const discountPcts: number[] = await Promise.all(
-    items.map((it) => activeDiscountPctForSlugServer(it.slug))
-  );
+  // İndirim yüzdeleri ve MAP kodları
+  const [discountPcts, mapCodes] = await Promise.all([
+    Promise.all(itemsDb.map((it) => activeDiscountPctForSlugServer(it.slug))),
+    Promise.all(itemsDb.map((it) => Promise.resolve(productCodeForSlug(it.slug)))),
+  ]);
 
   const result = await withTransaction(async (conn: PoolConnection) => {
     const orderNumber = makeOrderNumber();
@@ -57,29 +60,31 @@ export async function POST(req: Request) {
     let gross = 0;
     let discountTotal = 0;
 
-    // hesaplamaları yap ve order_items için değerleri hazırla
-    const computed = items.map((it, idx) => {
+    const computed = itemsDb.map((it, idx) => {
       const pct = discountPcts[idx] ?? 0;
       const unit = Number(it.price);
       const unitAfter = pct > 0 ? unit - Math.round(unit * (pct / 100)) : unit;
 
-      const lineGross = unit * Number(it.quantity);
-      const lineNet   = unitAfter * Number(it.quantity);
+      const qty = Number(it.quantity);
+      const lineGross = unit * qty;
+      const lineNet   = unitAfter * qty;
 
       gross += lineGross;
       discountTotal += (lineGross - lineNet);
 
-      return { it, unit, unitAfter };
+      return { it, pct, unit, unitAfter, qty, lineGross, lineNet };
     });
 
     const netTotal = gross - discountTotal;
 
+    // orders
     const [res] = await conn.execute<ResultSetHeader>(
       "INSERT INTO orders (order_number, email, total_amount, discount_total) VALUES (?, ?, ?, ?)",
       [orderNumber, email, netTotal, discountTotal]
     );
     const orderId = res.insertId;
 
+    // order_items
     for (const c of computed) {
       await conn.execute(
         `INSERT INTO order_items
@@ -91,41 +96,64 @@ export async function POST(req: Request) {
           c.it.slug,
           c.it.name,
           c.it.product_code,
-          Number(c.it.quantity),
+          c.qty,
           c.unit,
           c.unitAfter,
         ]
       );
     }
 
+    // sepeti temizle + e-posta güncelle
     await conn.execute("DELETE FROM cart_items WHERE cart_id = ?", [cartId]);
     await conn.execute("UPDATE carts SET email = ? WHERE id = ?", [email, cartId]);
 
     return { orderNumber, orderId, total: netTotal, discount_total: discountTotal, email };
   });
 
-  // Cabo postback
+  // --- Cabo S2S webhook ---
   try {
-    const caboItems = items
-      .map((it) => ({
-        code: productCodeForSlug(it.slug) || it.product_code,
-        quantity: Number(it.quantity),
-        unit_price: Number(it.price),
-      }))
-      .filter((x) => !!x.code);
+    // Ref (wid) yoksa post etmeyiz (atribüsyon yok demektir)
+    if (wid) {
+      const caboItems: CaboItem[] = itemsDb
+        .map((it, idx) => {
+          const code = mapCodes[idx];                // sadece MAP’te olanlar "anlaşmalı"
+          if (!code) return null;
 
-    await sendCaboWebhook({
-      keyId: process.env.CABO_KEY_ID || "UNKNOWN",
-      event: "purchase",
-      orderNumber: result.orderNumber,
-      email,
-      totalAmount: result.total,
-      discountTotal: result.discount_total,
-      items: caboItems,
-      wid,
-      lid,
-    });
-  } catch { /* sessiz geç */ }
+          const pct = discountPcts[idx] ?? 0;
+          // LANDING modunda: sadece indirim uygulanan (pct>0) kalemleri gönder
+          if (SCOPE === "landing" && pct <= 0) return null;
 
-  return NextResponse.json({ ok: true, ...result });
+          const unit = Number(it.price);
+          const unitAfter = pct > 0 ? unit - Math.round(unit * (pct / 100)) : unit;
+          const qty = Number(it.quantity);
+
+          return {
+            productCode: code,
+            productId: it.productId,      // opsiyonel
+            productSlug: it.slug,         // opsiyonel
+            quantity: qty,
+            unitPriceCharged: unitAfter,  // indirimli birim
+            lineTotal: unitAfter * qty,
+          } as CaboItem;
+        })
+        .filter((x): x is CaboItem => !!x);
+
+      if (caboItems.length > 0) {
+        await sendCaboWebhook({
+          keyId: process.env.CABO_KEY_ID || "UNKNOWN",
+          event: "purchase",
+          orderNumber: result.orderNumber,
+          email,
+          totalAmount: result.total,
+          discountTotal: result.discount_total,
+          items: caboItems,
+          caboRef: wid, // platform tarafında token/caboRef olarak okunur
+        });
+      }
+    }
+  } catch {
+    // postback hatası siparişi bozmasın; sessiz geç
+  }
+
+  return NextResponse.json({ ok: true, ...result, caboRef: wid, lid });
 }
