@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
 import { useEffect, useState } from "react";
@@ -9,11 +10,16 @@ type CartItem = {
   quantity: number;
   name: string;
   slug: string;
-  price: number; // kuruş
+  price: number; // kuruş (indirimsiz birim)
   imageUrl: string;
-  // opsiyonel, eğer API GET /api/cart indirim pct dönüyorsa gösterebilirsin
+  // API dönerse kullanılacak opsiyonel alanlar:
   discountPct?: number;
-  unitAfter?: number;
+  unitAfter?: number; // indirimli birim (kuruş)
+};
+
+type CartGetResponse = {
+  email?: string;
+  items: CartItem[];
 };
 
 type WebhookReport = {
@@ -34,6 +40,7 @@ type CheckoutResponse = {
   caboRef: string | null;
   lid: string | null;
   webhook?: WebhookReport;
+  error?: string;
 };
 
 export default function CartPage() {
@@ -43,18 +50,19 @@ export default function CartPage() {
   const [log, setLog] = useState<WebhookReport | null>(null);
   const [orderNo, setOrderNo] = useState<string | null>(null);
 
-  const total = items.reduce(
-    (acc, it) => acc + Number(it.price) * Number(it.quantity),
-    0
-  );
+  // Genel toplamı indirimli birim (varsa) üzerinden hesapla
+  const total = items.reduce((acc, it) => {
+    const unit = typeof it.unitAfter === "number" ? it.unitAfter : it.price;
+    return acc + unit * Number(it.quantity);
+  }, 0);
 
   async function load() {
     setLoading(true);
     try {
       const res = await fetch("/api/cart", { cache: "no-store" });
-      const j = await res.json();
+      const j = (await res.json()) as CartGetResponse;
       setEmail(j?.email ?? "");
-      setItems(j?.items ?? []);
+      setItems(Array.isArray(j?.items) ? j.items : []);
     } finally {
       setLoading(false);
     }
@@ -72,7 +80,9 @@ export default function CartPage() {
       body: JSON.stringify({ email }),
     });
     if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
+      const j: { error?: string } = await res
+        .json()
+        .catch(() => ({ error: "E-posta kaydedilemedi" }));
       alert(j?.error || "E-posta kaydedilemedi");
     }
   }
@@ -110,7 +120,7 @@ export default function CartPage() {
 
     const j = (await res.json().catch(() => ({}))) as CheckoutResponse;
     if (!res.ok || !j?.ok) {
-      alert((j as any)?.error || "Checkout başarısız");
+      alert(j?.error || "Checkout başarısız");
       return;
     }
 
@@ -148,10 +158,10 @@ export default function CartPage() {
           <div className="text-neutral-400">Sepetiniz boş.</div>
         )}
         {items.map((it) => {
-          const lineTotal = Number(it.price) * Number(it.quantity);
-          const hasDisc = typeof it.unitAfter === "number" && it.unitAfter! < it.price;
-          const lineAfter =
-            hasDisc ? Number(it.unitAfter) * Number(it.quantity) : lineTotal;
+          const hasDisc =
+            typeof it.unitAfter === "number" && it.unitAfter < it.price;
+          const unit = hasDisc ? it.unitAfter! : it.price;
+          const lineTotal = unit * Number(it.quantity);
 
           return (
             <div
@@ -175,11 +185,11 @@ export default function CartPage() {
                           {toCurrencyTRY(it.price)}
                         </span>
                         <b className="text-emerald-400">
-                          {toCurrencyTRY(it.unitAfter!)}
+                          {toCurrencyTRY(unit)}
                         </b>
                       </>
                     ) : (
-                      <b>{toCurrencyTRY(it.price)}</b>
+                      <b>{toCurrencyTRY(unit)}</b>
                     )}
                   </div>
                 </div>
@@ -210,12 +220,7 @@ export default function CartPage() {
               </div>
 
               <div className="text-sm">
-                Toplam:{" "}
-                <b>
-                  {hasDisc
-                    ? toCurrencyTRY(lineAfter)
-                    : toCurrencyTRY(lineTotal)}
-                </b>
+                Toplam: <b>{toCurrencyTRY(lineTotal)}</b>
               </div>
             </div>
           );
