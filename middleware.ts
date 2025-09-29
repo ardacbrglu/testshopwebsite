@@ -1,71 +1,77 @@
-import { NextRequest, NextResponse } from "next/server";
+// middleware.ts
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-/**
- * Cabo ref yakalama:
- * - ?token=..., ?wid=..., ?ref=..., ?w=...  -> cabo_wid cookie
- * - ?lid=..., ?l=..., ?lander=..., ?landingId=... -> cabo_lid cookie
- * TTL: CABO_COOKIE_TTL_DAYS (yoksa session cookie)
- * Scope=landing ise ilk açılan /products/[slug] yolunu cabo_landing_slug olarak saklar.
- */
+const WID = "cabo_wid";
+const LID = "cabo_lid";
+const LAND = "cabo_landing_slug";
+const SEEN_AT = "cabo_seen_at"; // epoch seconds
+const CONSENT = "consent_marketing";
+
+const SCOPE = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase(); // "sitewide" | "landing"
+const COOKIE_TTL_DAYS = Math.max(
+  1,
+  Number.isFinite(Number(process.env.CABO_COOKIE_TTL_DAYS))
+    ? Number(process.env.CABO_COOKIE_TTL_DAYS)
+    : 14
+);
+const SEC = 24 * 60 * 60;
+const MAX_AGE = COOKIE_TTL_DAYS * SEC;
+
+function setCookie(res: NextResponse, name: string, value: string) {
+  res.cookies.set(name, value, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: MAX_AGE,
+  });
+}
+function delCookie(res: NextResponse, name: string) {
+  res.cookies.set(name, "", { path: "/", maxAge: 0 });
+}
+
 export function middleware(req: NextRequest) {
-  const url = req.nextUrl;
+  const url = req.nextUrl.clone();
 
-  const wid =
-    url.searchParams.get("wid") ||
-    url.searchParams.get("token") || // Cabo bazen token gönderir
-    url.searchParams.get("w") ||
-    url.searchParams.get("ref") ||
-    url.searchParams.get("cwid");
-
-  const lid =
-    url.searchParams.get("lid") ||
-    url.searchParams.get("l") ||
-    url.searchParams.get("lander") ||
-    url.searchParams.get("landingId");
-
-  if (!wid && !lid) {
-    return NextResponse.next();
+  // Manuel temizleme: ?clear_ref=1
+  if (url.searchParams.get("clear_ref") === "1") {
+    const clean = new URL(url);
+    clean.searchParams.delete("clear_ref");
+    const res = NextResponse.redirect(clean);
+    [WID, LID, LAND, SEEN_AT].forEach((n) => delCookie(res, n));
+    return res;
   }
 
-  // URL'i temizle
-  const cleaned = new URL(url.toString());
-  ["wid", "token", "w", "ref", "cwid", "lid", "l", "lander", "landingId"].forEach((k) =>
-    cleaned.searchParams.delete(k)
-  );
-  const res = NextResponse.redirect(cleaned, 302);
+  // Ref parametreleri
+  const token = url.searchParams.get("token") || url.searchParams.get("wid");
+  const lid = url.searchParams.get("lid") || url.searchParams.get("link");
+  const hasConsent = req.cookies.get(CONSENT)?.value === "1";
 
-  // Cookie seçenekleri (3. argüman): Partial<ResponseCookie>
-  const ttlDaysRaw = process.env.CABO_COOKIE_TTL_DAYS;
-  const ttlDays = ttlDaysRaw ? Number(ttlDaysRaw) : 0;
+  if (token) {
+    if (hasConsent) {
+      // Consent var → cookie yaz, URL'yi temizle
+      const clean = new URL(url);
+      ["token", "wid", "lid", "link"].forEach((k) => clean.searchParams.delete(k));
 
-  const cookieOpts: {
-    path: string;
-    sameSite: "lax" | "strict" | "none";
-    maxAge?: number;
-  } = { path: "/", sameSite: "lax" };
-
-  if (Number.isFinite(ttlDays) && ttlDays > 0) {
-    cookieOpts.maxAge = Math.floor(ttlDays * 86400); // saniye
-  }
-
-  if (wid) res.cookies.set("cabo_wid", String(wid), cookieOpts);
-  if (lid) res.cookies.set("cabo_lid", String(lid), cookieOpts);
-
-  // Scope=landing ise ilk açılan ürün slug'ını not et
-  const scope = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase();
-  if (scope === "landing") {
-    const already = req.cookies.get("cabo_landing_slug")?.value;
-    if (!already) {
-      const m = /^\/products\/([^\/\?\#]+)/i.exec(url.pathname);
-      if (m?.[1]) {
-        res.cookies.set("cabo_landing_slug", m[1], cookieOpts);
+      const res = NextResponse.redirect(clean);
+      setCookie(res, WID, token);
+      if (lid) setCookie(res, LID, String(lid));
+      if (SCOPE === "landing") {
+        const m = url.pathname.match(/^\/products\/([^/]+)/);
+        if (m?.[1]) setCookie(res, LAND, m[1]);
       }
+      setCookie(res, SEEN_AT, String(Math.floor(Date.now() / 1000)));
+      return res;
+    } else {
+      // Consent yok → cookie yazma, URL üzerinde kalsın (ephemeral)
+      return NextResponse.next();
     }
   }
 
-  return res;
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!_next|favicon.ico|cabo-init.js).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

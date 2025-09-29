@@ -1,220 +1,172 @@
 // src/app/api/cart/route.ts
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 import { NextResponse } from "next/server";
-import { getOrCreateCartId, getCartIdOptional } from "@/lib/cart";
+import { cookies } from "next/headers";
 import { query } from "@/lib/db";
-import { activeDiscountPctForSlugServer } from "@/lib/attribution";
+import { activeDiscountPctForSlugServer, calcDiscountedUnitPrice } from "@/lib/attribution";
 
-/* ----------------------------- types ----------------------------- */
-type Body = Record<string, unknown>;
+const COOKIE_NAME = "cart_id";
 
-interface IdRow { id: number }
-interface CartEmailRow { email: string | null }
-
-interface CartJoinRow {
+type CartRow = { id: number; email: string | null; created_at: string };
+type ItemRow = {
   id: number;
-  productId: number;
+  product_id: number;
   quantity: number;
-  name: string;
   slug: string;
-  price: number;         // kuruş
+  name: string;
+  price: number; // kuruş
   imageUrl: string;
-  product_code: string;
+};
+
+function noStore(res: NextResponse) {
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }
 
-/* ------------------------- helpers (body) ------------------------- */
-async function readBody(req: Request): Promise<Body> {
-  const ct = req.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    try { const j = await req.json(); return (j && typeof j === "object") ? (j as Body) : {}; }
-    catch { return {}; }
-  }
-  if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
-    try { const fd = await req.formData(); const obj: Body = {}; fd.forEach((v,k)=>obj[k]=v); return obj; }
-    catch { /* fallthrough */ }
-  }
-  try {
-    const txt = await req.text();
-    if (!txt) return {};
-    try { const j = JSON.parse(txt) as unknown; return (j && typeof j === "object") ? (j as Body) : {}; }
-    catch {
-      const p = new URLSearchParams(txt); const obj: Body = {};
-      for (const [k,v] of p.entries()) obj[k]=v; return obj;
-    }
-  } catch { return {}; }
-}
+async function getOrCreateCartId(): Promise<number> {
+  const store = await cookies();
+  const existing = store.get(COOKIE_NAME)?.value;
+  if (existing && Number.isFinite(Number(existing))) return Number(existing);
 
-async function resolveProductId(body: Body): Promise<number | null> {
-  const pid = body.productId ?? body.productID ?? body.pid;
-  if (pid != null) return Number(pid);
-  const slug = body.slug;
-  if (typeof slug === "string" && slug) {
-    const rows = (await query("SELECT id FROM products WHERE slug = ? LIMIT 1", [slug])) as unknown as IdRow[];
-    const row = rows[0]; if (row?.id) return Number(row.id);
-  }
-  return null;
-}
-
-function normalizeQty(v: unknown, fallback = 1): number {
-  const n = Number(v ?? fallback);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
-
-/* ------------------------------ handlers ------------------------------ */
-
-// GET /api/cart  → indirimleri de hesaplar, özet verir
-export async function GET() {
-  const cartId = await getOrCreateCartId();
-
-  const itemsDb = (await query(
-    `SELECT ci.id,
-            ci.product_id AS productId,
-            ci.quantity,
-            p.name, p.slug, p.price, p.imageUrl, p.product_code
-     FROM cart_items ci
-     JOIN products p ON p.id = ci.product_id
-     WHERE ci.cart_id = ?`,
-    [cartId]
-  )) as unknown as CartJoinRow[];
-
-  const discountPcts = await Promise.all(
-    itemsDb.map((it) => activeDiscountPctForSlugServer(it.slug))
-  );
-
-  let gross = 0;
-  let discountTotal = 0;
-
-  const items = itemsDb.map((it, idx) => {
-    const pct = discountPcts[idx] ?? 0;
-    const unit = Number(it.price);
-    const unitAfter = pct > 0 ? unit - Math.round(unit * (pct / 100)) : unit;
-
-    const lineGross = unit * Number(it.quantity);
-    const lineNet   = unitAfter * Number(it.quantity);
-    const lineDisc  = lineGross - lineNet;
-
-    gross += lineGross;
-    discountTotal += lineDisc;
-
-    return {
-      id: it.id,
-      productId: it.productId,
-      quantity: it.quantity,
-      slug: it.slug,
-      name: it.name,
-      imageUrl: it.imageUrl,
-      product_code: it.product_code,
-
-      unitPrice: unit,
-      discountPct: pct,
-      unitPriceAfter: unitAfter,
-
-      lineGross,
-      lineDiscount: lineDisc,
-      lineNet,
-    };
+  // yeni cart
+  const ins = await query("INSERT INTO carts (email) VALUES (NULL)");
+  // mysql2 execute insertId:
+  const insertedId = (ins as unknown as { insertId: number }).insertId;
+  const res = NextResponse.next();
+  res.cookies.set(COOKIE_NAME, String(insertedId), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30, // 30 gün
   });
+  // Route handler içinde olduğumuz için set edilen cookie'yi process’e de yansıtalım:
+  (await cookies()).set(COOKIE_NAME, String(insertedId));
 
-  const net = gross - discountTotal;
+  return insertedId;
+}
 
-  const cartRows = (await query("SELECT email FROM carts WHERE id = ?", [cartId])) as unknown as CartEmailRow[];
-  const email = cartRows[0]?.email ?? null;
+// --- GET /api/cart
+export async function GET() {
+  try {
+    const cartId = await getOrCreateCartId();
 
-  return NextResponse.json(
-    {
+    // email al
+    const cartRows = (await query("SELECT id, email, created_at FROM carts WHERE id=?", [
       cartId,
-      email,
-      items,
-      totals: { gross, discountTotal, net },
-    },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+    ])) as CartRow[];
+    const email = cartRows[0]?.email || "";
+
+    // items
+    const rows = (await query(
+      `SELECT ci.id, ci.product_id, ci.quantity, p.slug, p.name, p.price, p.imageUrl
+       FROM cart_items ci
+       JOIN products p ON p.id=ci.product_id
+       WHERE ci.cart_id=?
+       ORDER BY ci.id ASC`,
+      [cartId]
+    )) as ItemRow[];
+
+    // indirim uygula (gating attribution.ts içinde)
+    const items = [];
+    for (const r of rows) {
+      const pct = await activeDiscountPctForSlugServer(r.slug);
+      const { finalPrice, applied } = calcDiscountedUnitPrice(Number(r.price), pct);
+      items.push({
+        id: r.id,
+        productId: r.product_id,
+        quantity: r.quantity,
+        slug: r.slug,
+        name: r.name,
+        price: r.price,
+        imageUrl: r.imageUrl,
+        discountPct: applied ? pct : 0,
+        unitAfter: finalPrice,
+      });
+    }
+
+    return noStore(
+      NextResponse.json({
+        email,
+        items,
+      })
+    );
+  } catch (e) {
+    return noStore(NextResponse.json({ error: "Cart load error" }, { status: 500 }));
+  }
 }
 
-// POST /api/cart  → ekle
+// --- POST /api/cart  { productId, quantity }
 export async function POST(req: Request) {
-  const body = await readBody(req);
-  const quantity = normalizeQty(body.quantity ?? body.qty ?? 1);
-  const productId = await resolveProductId(body);
-  if (!productId) return NextResponse.json({ error: "Ürün bilgisi eksik (productId/slug)" }, { status: 400 });
+  try {
+    const { productId, quantity = 1 } = (await req.json()) as {
+      productId: number;
+      quantity?: number;
+    };
+    if (!productId || Number(quantity) <= 0) {
+      return noStore(NextResponse.json({ error: "Geçersiz istek" }, { status: 400 }));
+    }
 
-  const cartId = await getOrCreateCartId();
-  const prod = (await query("SELECT id FROM products WHERE id=? AND isActive=1", [productId])) as unknown as IdRow[];
-  if (!prod[0]) return NextResponse.json({ error: "Ürün bulunamadı" }, { status: 404 });
+    const cartId = await getOrCreateCartId();
 
-  const exists = (await query(
-    "SELECT id, quantity FROM cart_items WHERE cart_id=? AND product_id=?",
-    [cartId, productId]
-  )) as unknown as { id: number; quantity: number }[];
+    const exist = (await query(
+      "SELECT id, quantity FROM cart_items WHERE cart_id=? AND product_id=? LIMIT 1",
+      [cartId, productId]
+    )) as { id: number; quantity: number }[];
 
-  if (exists[0]) {
-    await query("UPDATE cart_items SET quantity=? WHERE id=? AND cart_id=?", [
-      Number(exists[0].quantity) + quantity, exists[0].id, cartId,
-    ]);
-  } else {
-    await query("INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?)", [
-      cartId, productId, quantity,
-    ]);
+    if (exist.length) {
+      await query("UPDATE cart_items SET quantity=quantity+? WHERE id=?", [
+        Number(quantity),
+        exist[0].id,
+      ]);
+    } else {
+      await query(
+        "INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?)",
+        [cartId, productId, Number(quantity)]
+      );
+    }
+
+    return noStore(NextResponse.json({ ok: true }));
+  } catch {
+    return noStore(NextResponse.json({ error: "Sepete eklenemedi" }, { status: 500 }));
   }
-
-  return NextResponse.json({ ok: true, cartId });
 }
 
-// PUT /api/cart  → miktar güncelle
-export async function PUT(req: Request) {
-  const body = await readBody(req);
-  const cartId = await getOrCreateCartId();
-
-  const quantity = normalizeQty(body.quantity, 1);
-  if (!quantity) return NextResponse.json({ error: "Miktar ≥ 1 olmalı" }, { status: 400 });
-
-  const itemId = body.itemId != null ? Number(body.itemId) : undefined;
-  const productId = body.productId != null ? Number(body.productId) : undefined;
-
-  if (itemId) {
-    await query("UPDATE cart_items SET quantity=? WHERE id=? AND cart_id=?", [quantity, itemId, cartId]);
-    return NextResponse.json({ ok: true });
-  }
-  if (productId) {
-    await query("UPDATE cart_items SET quantity=? WHERE cart_id=? AND product_id=?", [quantity, cartId, productId]);
-    return NextResponse.json({ ok: true });
-  }
-  return NextResponse.json({ error: "itemId veya productId gerekli" }, { status: 400 });
-}
-
-// PATCH /api/cart  → email kaydet
+// --- PATCH /api/cart  { email }
 export async function PATCH(req: Request) {
-  const body = await readBody(req);
-  const email = typeof body.email === "string" ? body.email.trim() : "";
-  const cartId = await getOrCreateCartId();
-  if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
-    return NextResponse.json({ error: "Geçerli bir e-posta girin" }, { status: 400 });
+  try {
+    const { email } = (await req.json()) as { email: string };
+    const cartId = await getOrCreateCartId();
+    await query("UPDATE carts SET email=? WHERE id=?", [String(email || ""), cartId]);
+    return noStore(NextResponse.json({ ok: true }));
+  } catch {
+    return noStore(NextResponse.json({ error: "E-posta kaydedilemedi" }, { status: 500 }));
   }
-  await query("UPDATE carts SET email=? WHERE id=?", [email, cartId]);
-  const c = (await query("SELECT id FROM customers WHERE email=? LIMIT 1", [email])) as unknown as IdRow[];
-  if (!c[0]) await query("INSERT INTO customers (email) VALUES (?)", [email]);
-  return NextResponse.json({ ok: true, cartId, email });
 }
 
-// DELETE /api/cart  → satır sil / tümünü temizle
+// --- PUT /api/cart  { itemId, quantity }
+export async function PUT(req: Request) {
+  try {
+    const { itemId, quantity } = (await req.json()) as { itemId: number; quantity: number };
+    if (!itemId || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) {
+      return noStore(NextResponse.json({ error: "Geçersiz istek" }, { status: 400 }));
+    }
+    await query("UPDATE cart_items SET quantity=? WHERE id=?", [Number(quantity), itemId]);
+    return noStore(NextResponse.json({ ok: true }));
+  } catch {
+    return noStore(NextResponse.json({ error: "Güncellenemedi" }, { status: 500 }));
+  }
+}
+
+// --- DELETE /api/cart  { itemId }
 export async function DELETE(req: Request) {
-  const body = await readBody(req);
-  const itemId = body.itemId != null ? Number(body.itemId) : undefined;
-  const productId = body.productId != null ? Number(body.productId) : undefined;
-
-  const cartId = await getCartIdOptional();
-  if (!cartId) return NextResponse.json({ ok: true });
-
-  if (itemId) {
-    await query("DELETE FROM cart_items WHERE id=? AND cart_id=?", [itemId, cartId]);
-    return NextResponse.json({ ok: true });
+  try {
+    const { itemId } = (await req.json()) as { itemId: number };
+    if (!itemId) {
+      return noStore(NextResponse.json({ error: "Geçersiz istek" }, { status: 400 }));
+    }
+    await query("DELETE FROM cart_items WHERE id=?", [itemId]);
+    return noStore(NextResponse.json({ ok: true }));
+  } catch {
+    return noStore(NextResponse.json({ error: "Silinemedi" }, { status: 500 }));
   }
-  if (productId) {
-    await query("DELETE FROM cart_items WHERE cart_id=? AND product_id=?", [cartId, productId]);
-    return NextResponse.json({ ok: true });
-  }
-  await query("DELETE FROM cart_items WHERE cart_id=?", [cartId]);
-  return NextResponse.json({ ok: true });
 }
