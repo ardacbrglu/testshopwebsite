@@ -1,77 +1,40 @@
-// middleware.ts
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+// src/middleware.ts
+/**
+ * ?lid=... yakalayıp httpOnly cookie (cabo_attrib) olarak yazar, URL'i temizler.
+ */
+import { NextResponse, NextRequest } from "next/server";
 
-const WID = "cabo_wid";
-const LID = "cabo_lid";
-const LAND = "cabo_landing_slug";
-const SEEN_AT = "cabo_seen_at"; // epoch seconds
-const CONSENT = "consent_marketing";
+const ATTR_COOKIE = "cabo_attrib";
 
-const SCOPE = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase(); // "sitewide" | "landing"
-const COOKIE_TTL_DAYS = Math.max(
-  1,
-  Number.isFinite(Number(process.env.CABO_COOKIE_TTL_DAYS))
-    ? Number(process.env.CABO_COOKIE_TTL_DAYS)
-    : 14
-);
-const SEC = 24 * 60 * 60;
-const MAX_AGE = COOKIE_TTL_DAYS * SEC;
-
-function setCookie(res: NextResponse, name: string, value: string) {
-  res.cookies.set(name, value, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: MAX_AGE,
-  });
-}
-function delCookie(res: NextResponse, name: string) {
-  res.cookies.set(name, "", { path: "/", maxAge: 0 });
+function ttlSeconds(): number {
+  const days = Math.max(1, Number(process.env.CABO_COOKIE_TTL_DAYS || 14));
+  return days * 24 * 60 * 60;
 }
 
 export function middleware(req: NextRequest) {
-  const url = req.nextUrl.clone();
+  const { searchParams, pathname, origin } = req.nextUrl;
+  const lid = searchParams.get("lid");
 
-  // Manuel temizleme: ?clear_ref=1
-  if (url.searchParams.get("clear_ref") === "1") {
-    const clean = new URL(url);
-    clean.searchParams.delete("clear_ref");
-    const res = NextResponse.redirect(clean);
-    [WID, LID, LAND, SEEN_AT].forEach((n) => delCookie(res, n));
+  if (lid && /^\d+$/.test(lid)) {
+    const res = NextResponse.redirect(new URL(pathname, origin));
+    const payload = JSON.stringify({ lid: Number(lid), ts: Date.now() });
+
+    res.cookies.set({
+      name: ATTR_COOKIE,
+      value: payload,
+      maxAge: ttlSeconds(),
+      httpOnly: true,
+      sameSite: "lax",
+      secure: true,
+      path: "/",
+    });
+
     return res;
-  }
-
-  // Ref parametreleri
-  const token = url.searchParams.get("token") || url.searchParams.get("wid");
-  const lid = url.searchParams.get("lid") || url.searchParams.get("link");
-  const hasConsent = req.cookies.get(CONSENT)?.value === "1";
-
-  if (token) {
-    if (hasConsent) {
-      // Consent var → cookie yaz, URL'yi temizle
-      const clean = new URL(url);
-      ["token", "wid", "lid", "link"].forEach((k) => clean.searchParams.delete(k));
-
-      const res = NextResponse.redirect(clean);
-      setCookie(res, WID, token);
-      if (lid) setCookie(res, LID, String(lid));
-      if (SCOPE === "landing") {
-        const m = url.pathname.match(/^\/products\/([^/]+)/);
-        if (m?.[1]) setCookie(res, LAND, m[1]);
-      }
-      setCookie(res, SEEN_AT, String(Math.floor(Date.now() / 1000)));
-      return res;
-    } else {
-      // Consent yok → cookie yazma, URL üzerinde kalsın (ephemeral)
-      return NextResponse.next();
-    }
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/health).*)"],
 };
