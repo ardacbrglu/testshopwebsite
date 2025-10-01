@@ -1,24 +1,28 @@
 // src/app/layout.tsx
 import "./globals.css";
+import Script from "next/script";
 import NavBar from "@/components/NavBar";
+import type { ReactNode } from "react";
 
 export const metadata = {
   title: "Test Shop",
-  description: "Email ile sipariş kaydı, basit demo mağaza",
+  description: "Demo e-ticaret",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="tr" suppressHydrationWarning>
-      <body className="bg-neutral-950 text-neutral-100">
+    <html lang="tr">
+      <head>
+        {/* Ref/consent/wid yakalayıp cookie'leri ayarlayan başlangıç scripti */}
+        <Script src="/cabo-init.js" id="cabo-init" strategy="beforeInteractive" />
+      </head>
+      <body className="min-h-screen bg-neutral-950 text-neutral-200">
         <header className="border-b border-neutral-900">
-          <div className="max-w-6xl mx-auto px-4 h-14 flex items-center">
+          <div className="container mx-auto px-4 py-4">
             <NavBar />
           </div>
         </header>
-        <div className="max-w-6xl mx-auto px-4">
-          {children}
-        </div>
+        <main>{children}</main>
       </body>
     </html>
   );

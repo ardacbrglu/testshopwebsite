@@ -1,22 +1,143 @@
 // src/app/cabo-init.js/route.ts
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-function safeB64Decode(b64: string): string | null {
-  try { return Buffer.from(b64, "base64").toString("utf8"); } catch { return null; }
+/**
+ * Bu endpoint, <Script src="/cabo-init.js" strategy="beforeInteractive" /> ile
+ * sayfa yüklenir yüklenmez çalışır. URL parametrelerinden ref token'ı alır,
+ * gerekli çerezleri ayarlar, URL'yi temizler ve bir kere sayfayı yeniler.
+ *
+ * LANDING scope'ta slug şu sırayla çıkarılır:
+ *  1) /products/[slug] path
+ *  2) ?slug=product-x | ?pslug=product-x
+ *  3) ?code=<productCode>  -> CABO_MAP_JSON'dan code->slug çöz
+ */
+
+function readEnvClean(raw?: string | null): string {
+  const v = raw ?? "";
+  const noQuotes = v.replace(/^['"]|['"]$/g, "");
+  const noInlineComment = noQuotes.replace(/\s+#.*$/, "");
+  return noInlineComment.trim();
+}
+
+function invertMapForClient(): Record<string, string> {
+  try {
+    const txt = process.env.CABO_MAP_JSON || "{}";
+    const map = JSON.parse(txt) as Record<string, { code: string; discount: string }>;
+    const out: Record<string, string> = {};
+    for (const slug of Object.keys(map)) {
+      const code = map[slug]?.code;
+      if (code) out[String(code)] = slug;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const c = cookieStore.get("cabo_attrib")?.value || "";
-  let wid = "";
-  if (c.includes(".")) {
-    const raw = c.split(".")[0];
-    const body = safeB64Decode(raw);
-    if (body) { try { wid = JSON.parse(body)?.wid || ""; } catch {} }
-  }
-  const js = `try{sessionStorage.setItem('cabo_wid', ${JSON.stringify(wid)});}catch(e){}`;
-  return new NextResponse(js, {
-    headers: { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" }
+  const ttlDaysRaw = readEnvClean(process.env.CABO_COOKIE_TTL_DAYS);
+  const ttlDays = Number(ttlDaysRaw);
+  const ttlDaysSafe = Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 14;
+
+  const scope = readEnvClean(process.env.CABO_ATTRIBUTION_SCOPE).toLowerCase() === "landing" ? "landing" : "sitewide";
+  const codeToSlug = invertMapForClient();
+
+  const js = `
+  (function(){
+    try{
+      var url = new URL(window.location.href);
+      var qp  = url.searchParams;
+
+      // Ref token alias'ları
+      var wid = qp.get("wid") || qp.get("token") || qp.get("ref") || qp.get("cabo") || qp.get("r") || "";
+      var lid = qp.get("lid") || "";
+
+      // Cookie yardımcıları
+      var secure = location.protocol === "https:";
+      var ttlS   = ${ttlDaysSafe} * 24 * 60 * 60;
+      function setCookie(k, v, maxAge){
+        document.cookie = k + "=" + encodeURIComponent(v) +
+          "; Max-Age=" + maxAge +
+          "; Path=/" +
+          "; SameSite=Lax" +
+          (secure ? "; Secure" : "");
+      }
+      function getCookie(name){
+        return (document.cookie.split(/;\\s*/).find(s => s.startsWith(name+"=")) || "").split("=").slice(1).join("=") || "";
+      }
+      function delParam(name){ if(qp.has(name)){ qp.delete(name); return true; } return false; }
+
+      var changed = false;
+      var hadWid = getCookie("cabo_wid") !== "";
+
+      if(wid){
+        var now = Math.floor(Date.now()/1000);
+        setCookie("cabo_wid", wid, ttlS);
+        setCookie("cabo_seen_at", String(now), ttlS);
+        if(lid) setCookie("cabo_lid", lid, ttlS);
+        // Pazarlama consent (atıf+indirim için şart)
+        setCookie("consent_marketing", "1", ttlS);
+
+        // LANDING ise hedef slug'ı bulmaya çalış
+        if ("${scope}" === "landing") {
+          var landingSlug = null;
+
+          // 1) /products/[slug]
+          var m = location.pathname.match(/^\\/products\\/([^\\/?#]+)/i);
+          if(m && m[1]) landingSlug = decodeURIComponent(m[1]);
+
+          // 2) ?slug= / ?pslug=
+          if(!landingSlug){
+            var pslug = qp.get("slug") || qp.get("pslug");
+            if(pslug) landingSlug = pslug;
+          }
+
+          // 3) ?code=  (code -> slug çöz)
+          if(!landingSlug){
+            var code = qp.get("code");
+            if(code){
+              try{
+                var table = ${JSON.stringify(codeToSlug)};
+                if (table && table[code]) landingSlug = table[code];
+              }catch(_e){}
+            }
+          }
+
+          if(landingSlug){
+            setCookie("cabo_landing_slug", landingSlug, ttlS);
+          }
+        }
+
+        // URL'yi temizle
+        changed = delParam("wid") || changed;
+        changed = delParam("token") || changed;
+        changed = delParam("ref") || changed;
+        changed = delParam("cabo") || changed;
+        changed = delParam("r") || changed;
+        changed = delParam("lid") || changed;
+        changed = delParam("slug") || changed;
+        changed = delParam("pslug") || changed;
+        changed = delParam("code") || changed;
+        changed = delParam("consent") || changed;
+
+        if(changed){
+          var clean = url.origin + url.pathname + (qp.toString()?("?"+qp.toString()):"") + url.hash;
+          history.replaceState(null, "", clean);
+          // SSR indirim hemen görünsün diye bir kere yenile
+          if(!hadWid) location.reload();
+          else        location.reload();
+        }
+      }
+    }catch(_e){}
+  })();
+  `.trim();
+
+  return new Response(js, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
   });
 }
