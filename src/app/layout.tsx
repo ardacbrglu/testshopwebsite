@@ -1,28 +1,29 @@
-// src/app/layout.tsx
 import "./globals.css";
-import Script from "next/script";
-import NavBar from "@/components/NavBar";
-import type { ReactNode } from "react";
 
-export const metadata = {
-  title: "Test Shop",
-  description: "Demo e-ticaret",
-};
+export const metadata = { title: "Test Shop" };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+import Link from "next/link";
+import { ToastProvider } from "@/components/Toast";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="tr">
-      <head>
-        {/* Ref/consent/wid yakalayıp cookie'leri ayarlayan başlangıç scripti */}
-        <Script src="/cabo-init.js" id="cabo-init" strategy="beforeInteractive" />
-      </head>
-      <body className="min-h-screen bg-neutral-950 text-neutral-200">
-        <header className="border-b border-neutral-900">
-          <div className="container mx-auto px-4 py-4">
-            <NavBar />
-          </div>
-        </header>
-        <main>{children}</main>
+      <body className="bg-black text-white">
+        <ToastProvider>
+          <header className="border-b border-neutral-800">
+            <nav className="max-w-6xl mx-auto p-4 flex items-center gap-6">
+              <Link href="/" className="font-semibold">Test Shop</Link>
+              <div className="flex-1" />
+              <Link href="/">Anasayfa</Link>
+              <Link href="/products">Ürünler</Link>
+              <Link href="/cart">Sepetim</Link>
+            </nav>
+          </header>
+          <main className="min-h-[70vh]">{children}</main>
+          <footer className="border-t border-neutral-800 text-neutral-400 text-sm p-6 text-center">
+            © {new Date().getFullYear()} Test Shop
+          </footer>
+        </ToastProvider>
       </body>
     </html>
   );

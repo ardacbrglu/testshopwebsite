@@ -35,7 +35,7 @@
     "middleware.ts",
     "next-env.d.ts",
     "src/app/api/checkout/route.ts",
-    "src/app/orders/page.js",
+    "src/app/orders/page.tsx",
     "src/app/products/[slug]/page.js",
     "src/app/products/page.js",
     ".next/types/**/*.ts"

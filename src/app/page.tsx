@@ -1,4 +1,4 @@
-// app/page.tsx
+// src/app/page.tsx
 import Link from "next/link";
 
 type FeatureProps = { title: string; desc: string };
@@ -15,8 +15,8 @@ export const dynamic = "force-dynamic";
 
 export default function HomePage() {
   return (
-    <div className="min-h-[70vh] grid place-items-center">
-      <section className="text-center max-w-3xl px-4">
+    <section className="min-h-[60vh] grid place-items-center">
+      <div className="text-center max-w-3xl px-4">
         <div className="inline-flex items-center gap-2 rounded-full border border-neutral-800 px-3 py-1 text-xs text-neutral-300 mb-6">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
           Live checkout simulator
@@ -34,10 +34,16 @@ export default function HomePage() {
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <Link href="/products" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition">
+          <Link
+            href="/products"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium bg-emerald-500/90 hover:bg-emerald-500 text-black transition"
+          >
             Ürünlere Git
           </Link>
-          <Link href="/cart" className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition">
+          <Link
+            href="/cart"
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-medium border border-neutral-700 hover:bg-neutral-900 transition"
+          >
             Sepete Git
           </Link>
         </div>
@@ -47,7 +53,7 @@ export default function HomePage() {
           <Feature title="Gerçek Ödeme Yok" desc="Tamamen demo" />
           <Feature title="Cabo Hazır" desc="HMAC webhook + ref cookie" />
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
   );
 }

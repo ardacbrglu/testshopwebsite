@@ -1,76 +1,48 @@
-/* eslint-disable @next/next/no-img-element */
-import { query } from "@/lib/db";
-import { activeDiscountPctForSlugServer, calcDiscountedUnitPrice } from "@/lib/attribution";
-import CaboEnsureLanding from "@/components/CaboEnsureLanding";
-import AddToCart from "@/components/AddToCart";
+import { getProductBySlug } from "@/lib/queries";
+import { formatTRY } from "@/lib/money";
+import AddToCartWidget from "../../../components/AddToCartWidget";
+import { cookies } from "next/headers";
+import { readReferralCookie } from "@/lib/cookies";
+import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
 
-function readEnvClean(v?: string | null): string {
-  const raw = v ?? "";
-  const noQuotes = raw.replace(/^['"]|['"]$/g, "");
-  const noInline = noQuotes.replace(/\s+#.*$/, "");
-  return noInline.trim();
-}
+export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  const product = await getProductBySlug(slug);
+  if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 
-function isLanding(): boolean {
-  return readEnvClean(process.env.CABO_ATTRIBUTION_SCOPE).toLowerCase() === "landing";
-}
+  const c = await cookies();
+  const ref = readReferralCookie(c);
+  const enabled = isReferralValid(ref);
 
-function ttlDays(): number {
-  const n = Number(readEnvClean(process.env.CABO_COOKIE_TTL_DAYS));
-  return Number.isFinite(n) && n > 0 ? n : 14;
-}
-
-type Row = {
-  id: number;
-  slug: string;
-  name: string;
-  description: string | null;
-  price: number; // kuruş
-  imageUrl: string;
-};
-
-export default async function ProductPage({ params }: { params: { slug: string } }) {
-  const slug = params.slug;
-
-  const rows = (await query(
-    "SELECT id, slug, name, description, price, imageUrl FROM products WHERE slug=? LIMIT 1",
-    [slug]
-  )) as Row[];
-
-  if (!rows.length) {
-    return <div className="container mx-auto p-6">Ürün bulunamadı.</div>;
+  let pct = 0, finalPrice = product.priceCents;
+  if (enabled) {
+    const one = applyDiscountsToItems([{
+      product_id: product.id, slug: product.slug, name: product.name,
+      image_url: product.imageUrl, quantity: 1, unit_price_cents: product.priceCents,
+    }], { enabled, referral: ref }).items[0];
+    pct = one.discountPct; finalPrice = one.finalUnitPriceCents;
   }
-  const p = rows[0];
-
-  const pct = await activeDiscountPctForSlugServer(slug);
-  const { finalPrice, applied } = calcDiscountedUnitPrice(Number(p.price), pct);
 
   return (
-    <main className="container mx-auto px-4 py-8">
-      {/* landing modunda slug çerezini garantiye al */}
-      <CaboEnsureLanding slug={slug} landing={isLanding()} ttlDays={ttlDays()} />
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <img src={p.imageUrl} alt={p.name} className="w-full rounded-xl object-cover" />
-        <div>
-          <h1 className="text-2xl font-semibold mb-2">{p.name}</h1>
-          {p.description ? <p className="text-neutral-300 mb-4">{p.description}</p> : null}
-
-          <div className="mb-4 text-xl">
-            {applied ? (
-              <div className="flex items-baseline gap-3">
-                <span className="line-through text-neutral-500">₺{(Number(p.price) / 100).toFixed(2)}</span>
-                <span className="font-bold text-emerald-400">₺{(finalPrice / 100).toFixed(2)}</span>
-                <span className="text-sm text-emerald-400">-%{pct}</span>
-              </div>
-            ) : (
-              <span className="font-bold">₺{(Number(p.price) / 100).toFixed(2)}</span>
-            )}
-          </div>
-
-          <AddToCart productId={Number(p.id)} unitPrice={finalPrice} />
+    <div className="max-w-4xl mx-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={product.imageUrl || ""} alt={product.name} className="w-full h-80 object-cover rounded-xl" />
+      <div>
+        <h1 className="text-2xl font-semibold">{product.name}</h1>
+        <p className="text-neutral-400 mt-2">{product.description}</p>
+        <div className="mt-4 text-xl font-bold flex items-center gap-2">
+          {pct > 0 ? (
+            <>
+              <span className="text-neutral-500 line-through">{formatTRY(product.priceCents)}</span>
+              <span>{formatTRY(finalPrice)}</span>
+              <span className="text-emerald-400 text-sm">%{pct} indirim</span>
+            </>
+          ) : (
+            <span>{formatTRY(product.priceCents)}</span>
+          )}
         </div>
+        <AddToCartWidget slug={product.slug} />
       </div>
-    </main>
+    </div>
   );
 }

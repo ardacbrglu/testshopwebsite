@@ -1,104 +1,77 @@
-// src/app/api/cart/route.ts
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-
-/**
- * Cart API — sepette gösterim için indirimleri hesaplar (sitewide)
- *
- * Request body:
- *   { items: [{ slug: string; quantity: number; unitPrice: number }] }
- *
- * Response:
- *   {
- *     ok: true,
- *     items: [{
- *       slug, quantity, unitPrice, finalUnit, finalPrice, applied, discountRate,
- *       originalLine, linePaid
- *     }],
- *     totals: { subtotal, discountTotal, grandTotal }
- *   }
- */
-
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { readCartId, writeCartId, readReferralCookie } from "@/lib/cookies";
 import {
-  activeDiscountPctForSlugServer,
-  calcDiscountedUnitPrice,
-} from "@/lib/attribution";
+  addCartItem, ensureCartId, getCartItemsRaw, setItemQuantity, removeItem,
+  getProductBySlug, getCartEmail
+} from "@/lib/queries";
+import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
 
-type ReqItem = { slug: string; quantity: number; unitPrice: number };
-type ReqBody = { items: ReqItem[] };
+export async function GET() {
+  const c = await cookies();
+  const cartId = await ensureCartId(readCartId(c));
+  writeCartId(c, cartId);
 
-type CartItemOut = {
-  slug: string;
-  quantity: number;
-  unitPrice: number;
-  finalUnit: number;     // alias
-  finalPrice: number;    // backward compatibility
-  applied: boolean;
-  discountRate: number;
-  originalLine: number;
-  linePaid: number;
-};
+  const ref = readReferralCookie(c);
+  const raw = await getCartItemsRaw(cartId);
+  const { items, subtotal, total, discount } = applyDiscountsToItems(raw as any, {
+    enabled: isReferralValid(ref),
+    referral: ref,
+  });
 
-type CartTotals = { subtotal: number; discountTotal: number; grandTotal: number };
+  const email: string | null = await getCartEmail(cartId);
 
-function round2(n: number): number {
-  return Math.max(0, Math.round(n * 100) / 100);
+  return NextResponse.json({
+    cartId,
+    email,
+    items,
+    subtotalCents: subtotal,
+    discountCents: discount,
+    totalCents: total,
+    referral: ref || null
+  });
 }
-function bad(msg: string, code = 400) {
-  return NextResponse.json({ ok: false, error: msg }, { status: code });
-}
-function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
-}
 
-export async function POST(req: Request) {
-  try {
-    const body = (await req.json()) as ReqBody;
-    const items: ReqItem[] = Array.isArray(body?.items) ? body.items : [];
-    if (!items.length) return bad("No items");
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const { productId, slug, quantity = 1 } = body || {};
 
-    let subtotal = 0;
-    let discountTotal = 0;
+  const c = await cookies();
+  const cartId = await ensureCartId(readCartId(c));
+  writeCartId(c, cartId);
 
-    const out: CartItemOut[] = [];
-
-    for (const it of items) {
-      const q = Math.max(1, Number(it.quantity || 1));
-      const unit = Number(it.unitPrice || 0);
-      const pct = await activeDiscountPctForSlugServer(it.slug);
-      const { finalPrice, applied } = calcDiscountedUnitPrice(unit, pct);
-
-      const lineTotal = round2(unit * q);
-      const linePaid = round2(finalPrice * q);
-
-      subtotal += lineTotal;
-      discountTotal += lineTotal - linePaid;
-
-      out.push({
-        slug: it.slug,
-        quantity: q,
-        unitPrice: unit,
-        finalUnit: finalPrice,
-        finalPrice,
-        applied,
-        discountRate: pct,
-        originalLine: lineTotal,
-        linePaid,
-      });
-    }
-
-    const totals: CartTotals = {
-      subtotal,
-      discountTotal,
-      grandTotal: round2(subtotal - discountTotal),
-    };
-
-    return NextResponse.json({ ok: true, items: out, totals });
-  } catch (e: unknown) {
-    return NextResponse.json(
-      { ok: false, error: errorMessage(e) },
-      { status: 500 }
-    );
+  let pid = productId as number | undefined;
+  if (!pid && slug) {
+    const pr = await getProductBySlug(String(slug));
+    if (!pr) return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    pid = pr.id;
   }
+  if (!pid) return NextResponse.json({ error: "productId or slug required" }, { status: 400 });
+
+  await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
+  return GET();
+}
+
+export async function PATCH(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const { productId, quantity } = body || {};
+  if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
+
+  const c = await cookies();
+  const cartId = await ensureCartId(readCartId(c));
+
+  await setItemQuantity({ cartId, productId: Number(productId), quantity: Number(quantity) || 0 });
+  return GET();
+}
+
+export async function DELETE(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const productId = Number(searchParams.get("productId"));
+  if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
+
+  const c = await cookies();
+  const cartId = await ensureCartId(readCartId(c));
+
+  await removeItem(cartId, productId);
+  return GET();
 }
