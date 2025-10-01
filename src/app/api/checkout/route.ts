@@ -10,9 +10,6 @@ import {
 } from "@/lib/attribution";
 
 const COOKIE_NAME = "cart_id";
-const SCOPE = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase() as
-  | "sitewide"
-  | "landing";
 
 type ItemRow = {
   id: number;
@@ -110,7 +107,7 @@ export async function POST(req: Request) {
           it.product_id,
           it.slug,
           it.name,
-          productCodeForSlug(it.slug) || "", // boş olsa da DB kabul eder ama webhook için gating zaten var
+          productCodeForSlug(it.slug) || "",
           it.quantity,
           it.price,
           it.unitAfter,
@@ -126,16 +123,15 @@ export async function POST(req: Request) {
     const wid = store.get("cabo_wid")?.value || "";
     const lid = store.get("cabo_lid")?.value || "";
 
-    let webhook = {
-      attempted: false,
-      sent: false,
-      items: 0,
-      status: 0,
+    const webhook = {
+      attempted: false as boolean,
+      sent: false as boolean,
+      items: 0 as number,
+      status: 0 as number,
       url: process.env.CABO_WEBHOOK_URL || "",
     };
 
     if (envReady() && wid) {
-      // Gönderilecek kalemleri filtrele (haritada/kodlu olanlar ve indirim uygulanmış olsun)
       const postItems = enriched
         .filter((x) => x.discountPct > 0 && productCodeForSlug(x.slug))
         .map((x) => ({
@@ -146,8 +142,6 @@ export async function POST(req: Request) {
           unitPriceCharged: x.unitAfter,
           lineTotal: x.lineTotal,
         }));
-
-      // Landing ise zaten activeDiscountPctForSlugServer landing kuralını sağlamış durumda → burada ayrıca filtre gerekmez.
 
       if (postItems.length > 0) {
         webhook.attempted = true;
@@ -177,7 +171,7 @@ export async function POST(req: Request) {
           });
           webhook.status = resp.status;
           webhook.sent = resp.ok;
-        } catch {
+        } catch (_e) {
           webhook.sent = false;
         }
         webhook.items = postItems.length;
@@ -195,7 +189,7 @@ export async function POST(req: Request) {
         webhook,
       })
     );
-  } catch (e) {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "Checkout başarısız" }, { status: 500 }));
   }
 }

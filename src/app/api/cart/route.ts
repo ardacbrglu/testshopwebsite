@@ -27,20 +27,18 @@ async function getOrCreateCartId(): Promise<number> {
   const existing = store.get(COOKIE_NAME)?.value;
   if (existing && Number.isFinite(Number(existing))) return Number(existing);
 
-  // yeni cart
+  // yeni cart oluştur
   const ins = await query("INSERT INTO carts (email) VALUES (NULL)");
-  // mysql2 execute insertId:
   const insertedId = (ins as unknown as { insertId: number }).insertId;
-  const res = NextResponse.next();
-  res.cookies.set(COOKIE_NAME, String(insertedId), {
+
+  // Route Handler içindeyiz: cookies().set kullanmak doğru
+  store.set(COOKIE_NAME, String(insertedId), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 24 * 30, // 30 gün
   });
-  // Route handler içinde olduğumuz için set edilen cookie'yi process’e de yansıtalım:
-  (await cookies()).set(COOKIE_NAME, String(insertedId));
 
   return insertedId;
 }
@@ -50,7 +48,7 @@ export async function GET() {
   try {
     const cartId = await getOrCreateCartId();
 
-    // email al
+    // email
     const cartRows = (await query("SELECT id, email, created_at FROM carts WHERE id=?", [
       cartId,
     ])) as CartRow[];
@@ -90,7 +88,7 @@ export async function GET() {
         items,
       })
     );
-  } catch (e) {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "Cart load error" }, { status: 500 }));
   }
 }
@@ -126,7 +124,7 @@ export async function POST(req: Request) {
     }
 
     return noStore(NextResponse.json({ ok: true }));
-  } catch {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "Sepete eklenemedi" }, { status: 500 }));
   }
 }
@@ -138,7 +136,7 @@ export async function PATCH(req: Request) {
     const cartId = await getOrCreateCartId();
     await query("UPDATE carts SET email=? WHERE id=?", [String(email || ""), cartId]);
     return noStore(NextResponse.json({ ok: true }));
-  } catch {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "E-posta kaydedilemedi" }, { status: 500 }));
   }
 }
@@ -152,7 +150,7 @@ export async function PUT(req: Request) {
     }
     await query("UPDATE cart_items SET quantity=? WHERE id=?", [Number(quantity), itemId]);
     return noStore(NextResponse.json({ ok: true }));
-  } catch {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "Güncellenemedi" }, { status: 500 }));
   }
 }
@@ -166,7 +164,7 @@ export async function DELETE(req: Request) {
     }
     await query("DELETE FROM cart_items WHERE id=?", [itemId]);
     return noStore(NextResponse.json({ ok: true }));
-  } catch {
+  } catch (_e) {
     return noStore(NextResponse.json({ error: "Silinemedi" }, { status: 500 }));
   }
 }
