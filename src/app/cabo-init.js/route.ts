@@ -1,17 +1,5 @@
-// src/app/cabo-init.js/route.ts
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-/**
- * Bu endpoint, <Script src="/cabo-init.js" strategy="beforeInteractive" /> ile
- * sayfa yüklenir yüklenmez çalışır. URL parametrelerinden ref token'ı alır,
- * gerekli çerezleri ayarlar, URL'yi temizler ve bir kere sayfayı yeniler.
- *
- * LANDING scope'ta slug şu sırayla çıkarılır:
- *  1) /products/[slug] path
- *  2) ?slug=product-x | ?pslug=product-x
- *  3) ?code=<productCode>  -> CABO_MAP_JSON'dan code->slug çöz
- */
 
 function readEnvClean(raw?: string | null): string {
   const v = raw ?? "";
@@ -49,13 +37,12 @@ export async function GET() {
       var url = new URL(window.location.href);
       var qp  = url.searchParams;
 
-      // Ref token alias'ları
       var wid = qp.get("wid") || qp.get("token") || qp.get("ref") || qp.get("cabo") || qp.get("r") || "";
       var lid = qp.get("lid") || "";
 
-      // Cookie yardımcıları
       var secure = location.protocol === "https:";
       var ttlS   = ${ttlDaysSafe} * 24 * 60 * 60;
+
       function setCookie(k, v, maxAge){
         document.cookie = k + "=" + encodeURIComponent(v) +
           "; Max-Age=" + maxAge +
@@ -69,31 +56,27 @@ export async function GET() {
       function delParam(name){ if(qp.has(name)){ qp.delete(name); return true; } return false; }
 
       var changed = false;
-      var hadWid = getCookie("cabo_wid") !== "";
+      var hadWid  = getCookie("cabo_wid") !== "";
 
+      // Parametre ile geldiyse wid'i yaz
       if(wid){
         var now = Math.floor(Date.now()/1000);
         setCookie("cabo_wid", wid, ttlS);
         setCookie("cabo_seen_at", String(now), ttlS);
         if(lid) setCookie("cabo_lid", lid, ttlS);
-        // Pazarlama consent (atıf+indirim için şart)
         setCookie("consent_marketing", "1", ttlS);
 
-        // LANDING ise hedef slug'ı bulmaya çalış
         if ("${scope}" === "landing") {
           var landingSlug = null;
 
-          // 1) /products/[slug]
           var m = location.pathname.match(/^\\/products\\/([^\\/?#]+)/i);
           if(m && m[1]) landingSlug = decodeURIComponent(m[1]);
 
-          // 2) ?slug= / ?pslug=
           if(!landingSlug){
             var pslug = qp.get("slug") || qp.get("pslug");
             if(pslug) landingSlug = pslug;
           }
 
-          // 3) ?code=  (code -> slug çöz)
           if(!landingSlug){
             var code = qp.get("code");
             if(code){
@@ -109,7 +92,6 @@ export async function GET() {
           }
         }
 
-        // URL'yi temizle
         changed = delParam("wid") || changed;
         changed = delParam("token") || changed;
         changed = delParam("ref") || changed;
@@ -124,9 +106,23 @@ export async function GET() {
         if(changed){
           var clean = url.origin + url.pathname + (qp.toString()?("?"+qp.toString()):"") + url.hash;
           history.replaceState(null, "", clean);
-          // SSR indirim hemen görünsün diye bir kere yenile
-          if(!hadWid) location.reload();
-          else        location.reload();
+          location.reload();
+          return;
+        }
+      }
+
+      // Ek sağlamlaştırma:
+      // Landing modunda wid varsa ama landing_slug yoksa ve path /products/[slug] ise bir kez yaz.
+      if ("${scope}" === "landing") {
+        var hasWid = !!getCookie("cabo_wid");
+        var hasLS  = !!getCookie("cabo_landing_slug");
+        if (hasWid && !hasLS) {
+          var m2 = location.pathname.match(/^\\/products\\/([^\\/?#]+)/i);
+          if (m2 && m2[1]) {
+            setCookie("cabo_landing_slug", decodeURIComponent(m2[1]), ttlS);
+            location.reload();
+            return;
+          }
         }
       }
     }catch(_e){}
