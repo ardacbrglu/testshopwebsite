@@ -1,10 +1,8 @@
-// src/lib/cabo.ts
 import { createHmac } from "crypto";
 import { query } from "./db";
 
 /** ---- Types ---- */
 type Nullable<T> = T | null | undefined;
-
 type HeadersDict = Record<string, string>;
 
 export interface CaboItemIn {
@@ -66,7 +64,6 @@ function toUnitTL(cents: number): number {
 }
 
 function stableStringify(input: unknown): string {
-  // Basit ve güvenli kanonik JSON: anahtarlar alfabetik, derinlikte sıralı
   const seen = new WeakSet<object>();
   const stringify = (v: unknown): string => {
     if (v === null || typeof v !== "object") return JSON.stringify(v);
@@ -82,14 +79,17 @@ function stableStringify(input: unknown): string {
 }
 
 function signHeaders(keyId: string, tsSec: number, body: string, secret: string) {
-  // Standart imza: HMAC_SHA256(secret, `${ts}.${rawBody}`)
+  // 1) Standart imza: HMAC_SHA256(secret, `${ts}.${rawBody}`)
   const signature = createHmac("sha256", secret).update(`${tsSec}.${body}`).digest("hex");
 
-  // Kanonik JSON’la ikinci imza (platform destekliyorsa kullanır)
-  const canonicalBody = stableStringify(JSON.parse(body));
-  const canonicalSig = createHmac("sha256", secret)
-    .update(`${tsSec}.${canonicalBody}`)
-    .digest("hex");
+  // 2) Kanonik JSON imzası (opsiyonel)
+  let canonicalSig = "";
+  try {
+    const canonicalBody = stableStringify(JSON.parse(body));
+    canonicalSig = createHmac("sha256", secret).update(`${tsSec}.${canonicalBody}`).digest("hex");
+  } catch {
+    /* ignore canonical if body isn't JSON */
+  }
 
   const headers: HeadersDict = {
     "Content-Type": "application/json",
@@ -100,9 +100,9 @@ function signHeaders(keyId: string, tsSec: number, body: string, secret: string)
     "X-Key-Id": keyId,
     "X-Timestamp": String(tsSec),
     "X-Signature": signature,
-    // Kanonik imza (opsiyonel)
-    "X-Cabo-Signature-Canonical": canonicalSig,
   };
+  if (canonicalSig) headers["X-Cabo-Signature-Canonical"] = canonicalSig;
+
   return { headers, signature };
 }
 
@@ -120,70 +120,52 @@ async function logOutbound(args: LogOutboundArgs): Promise<void> {
     const payloadJson = JSON.stringify(args.payload);
     const headersJson = JSON.stringify(args.headers);
 
-    // Ana tablo
     try {
-      const hasMain = await tableExists("outboundWebhookLog");
-      if (hasMain) {
-        try {
-          await query(
-            `INSERT INTO outboundWebhookLog
-               (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              args.orderId ?? null,
-              `${args.url}\nHEADERS: ${headersJson}`,
-              args.keyId,
-              args.tsSec,
-              args.signature,
-              args.statusCode ?? null,
-              payloadJson,
-              args.responseBody ?? null,
-              args.errorText ?? null,
-            ]
-          );
-        } catch {
-          /* swallow */
-        }
+      if (await tableExists("outboundWebhookLog")) {
+        await query(
+          `INSERT INTO outboundWebhookLog
+             (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            args.orderId ?? null,
+            `${args.url}\nHEADERS: ${headersJson}`,
+            args.keyId,
+            args.tsSec,
+            args.signature,
+            args.statusCode ?? null,
+            payloadJson,
+            args.responseBody ?? null,
+            args.errorText ?? null,
+          ]
+        );
       }
-    } catch {
-      /* swallow */
-    }
+    } catch {}
 
-    // Opsiyonel ikinci tablo (debug için)
     if (String(process.env.CABO_LOG_BOTH || "0") === "1") {
       try {
-        const hasWH = await tableExists("webhook_logs");
-        if (hasWH) {
-          try {
-            await query(
-              `INSERT INTO webhook_logs (kind, payload)
-               VALUES ('outbound', CAST(? AS JSON))`,
-              [
-                JSON.stringify({
-                  orderId: args.orderId ?? null,
-                  url: args.url,
-                  keyId: args.keyId,
-                  tsSec: args.tsSec,
-                  signature: args.signature,
-                  statusCode: args.statusCode ?? null,
-                  headers: args.headers,
-                  payload: args.payload,
-                  responseBody: args.responseBody ?? null,
-                  errorText: args.errorText ?? null,
-                }),
-              ]
-            );
-          } catch {
-            /* swallow */
-          }
+        if (await tableExists("webhook_logs")) {
+          await query(
+            `INSERT INTO webhook_logs (kind, payload)
+             VALUES ('outbound', CAST(? AS JSON))`,
+            [
+              JSON.stringify({
+                orderId: args.orderId ?? null,
+                url: args.url,
+                keyId: args.keyId,
+                tsSec: args.tsSec,
+                signature: args.signature,
+                statusCode: args.statusCode ?? null,
+                headers: args.headers,
+                payload: args.payload,
+                responseBody: args.responseBody ?? null,
+                errorText: args.errorText ?? null,
+              }),
+            ]
+          );
         }
-      } catch {
-        /* swallow */
-      }
+      } catch {}
     }
-  } catch {
-    /* en dış katman: asla yukarı hata fırlatma */
-  }
+  } catch {}
 }
 
 async function sendOnce(
@@ -210,25 +192,20 @@ async function sendOnce(
   } catch (e) {
     errorText = (e as Error).message || String(e);
   } finally {
-    try {
-      await logOutbound({
-        orderId: orderId ?? null,
-        url,
-        keyId,
-        tsSec,
-        signature,
-        payload,
-        headers,
-        statusCode,
-        responseBody,
-        errorText,
-      });
-    } catch {
-      // log yazılamasa bile sessizce yut
-    }
+    await logOutbound({
+      orderId: orderId ?? null,
+      url,
+      keyId,
+      tsSec,
+      signature,
+      payload,
+      headers,
+      statusCode,
+      responseBody,
+      errorText,
+    });
   }
 
-  // 2xx başarı
   return statusCode != null && statusCode >= 200 && statusCode < 300;
 }
 
@@ -245,11 +222,11 @@ export async function postPurchaseToCabo(args: {
   const url = process.env.CABO_WEBHOOK_URL || "";
   if (!url) return false;
 
-  const keyId = process.env.CABO_KEY_ID || "TEST_KEY";
-  const secret = process.env.CABO_HMAC_SECRET || "";
+  const keyId = (process.env.CABO_KEY_ID || "TEST_KEY").trim();
+  const secret = (process.env.CABO_HMAC_SECRET || "").trim();
   const useIds = String(process.env.CABO_USE_PRODUCT_IDS || "0") === "1";
 
-  // 1) Yeni (önerilen) payload
+  // 1) Yeni payload
   const payloadNew: OutboundPayloadNew = {
     orderNumber: String(args.orderId ?? args.cartId),
     caboRef: args.token || null,
