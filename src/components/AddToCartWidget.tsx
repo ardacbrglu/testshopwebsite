@@ -1,40 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import QuantityStepper from "@/components/QuantityStepper";
-import { useToast } from "@/components/Toast";
+import { useToast } from "./Toast";
 
-export default function AddToCartWidget({ slug }: { slug: string }) {
-  const [qty, setQty] = useState(1);
-  const [loading, setLoading] = useState(false);
+export default function AddToCartWidget(props: {
+  slug: string;
+  productId: number;
+}) {
+  const { slug, productId } = props;
+  const [qty, setQty] = useState<number>(1);
   const { show } = useToast();
 
   async function add() {
-    setLoading(true);
-    try {
-      const r = await fetch("/api/cart", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, quantity: qty }),
-      });
-      if (!r.ok) throw new Error();
-      show({ type: "success", title: "Sepete eklendi" });
-    } catch {
-      show({ type: "error", title: "Sepete eklenemedi" });
-    } finally {
-      setLoading(false);
-    }
+    const r = await fetch("/api/cart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, productId, quantity: qty }),
+    });
+    if (r.ok) show({ type: "success", title: "Sepete eklendi" });
+    else show({ type: "error", title: "Sepete eklenemedi" });
   }
 
   return (
-    <div className="mt-6 flex items-center gap-3">
-      <QuantityStepper value={qty} min={1} onChange={setQty} />
-      <button
-        onClick={add}
-        disabled={loading}
-        className="rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900 disabled:opacity-50"
-      >
-        Sepete Ekle
+    <div className="flex items-center gap-3">
+      <div className="inline-flex items-center rounded-xl border border-neutral-700">
+        <button className="px-3 py-2" onClick={() => setQty((q) => Math.max(1, q - 1))}>
+          −
+        </button>
+        <div className="px-4 select-none">{qty}</div>
+        <button className="px-3 py-2" onClick={() => setQty((q) => q + 1)}>
+          +
+        </button>
+      </div>
+      <button className="btn" onClick={add}>
+        Sepete ekle
       </button>
     </div>
   );
