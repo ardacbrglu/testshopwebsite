@@ -1,13 +1,15 @@
+// src/lib/cabo.ts
 import { createHmac } from "crypto";
 import { query } from "./db";
 
+// --- Helpers
 async function tableExists(name: string) {
-  const r = (await query(
+  const rows = (await query(
     `SELECT COUNT(*) AS c FROM information_schema.tables
      WHERE table_schema = DATABASE() AND table_name = ?`,
     [name]
-  )) as unknown as Array<{ c: number }>;
-  return Number(r?.[0]?.c || 0) > 0;
+  )) as Array<{ c: number }>;
+  return Number(rows?.[0]?.c || 0) > 0;
 }
 
 async function logOutbound(args: {
@@ -17,19 +19,18 @@ async function logOutbound(args: {
   tsSec: number;
   signature: string;
   payload: unknown;
-  headers: Record<string, string>;
+  headers: Record<string,string>;
   statusCode?: number | null;
   responseBody?: string | null;
   errorText?: string | null;
 }) {
   const payloadJson = JSON.stringify(args.payload ?? {});
   const headersJson = JSON.stringify(args.headers ?? {});
-  // ana tablo
   if (await tableExists("outboundWebhookLog")) {
     await query(
       `INSERT INTO outboundWebhookLog
-         (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
       [
         args.orderId ?? null,
         `${args.url}\nHEADERS: ${headersJson}`,
@@ -43,11 +44,9 @@ async function logOutbound(args: {
       ]
     );
   }
-  // opsiyonel ikinci tablo (debug için)
   if (String(process.env.CABO_LOG_BOTH || "0") === "1" && (await tableExists("webhook_logs"))) {
     await query(
-      `INSERT INTO webhook_logs (kind, payload)
-       VALUES ('outbound', CAST(? AS JSON))`,
+      `INSERT INTO webhook_logs (kind, payload) VALUES ('outbound', CAST(? AS JSON))`,
       [
         JSON.stringify({
           orderId: args.orderId ?? null,
@@ -55,8 +54,8 @@ async function logOutbound(args: {
           keyId: args.keyId,
           tsSec: args.tsSec,
           signature: args.signature,
+          headers: args.headers,
           statusCode: args.statusCode ?? null,
-          headers: args.headers ?? {},
           payload: args.payload,
           responseBody: args.responseBody ?? null,
           errorText: args.errorText ?? null,
@@ -71,24 +70,20 @@ function toUnitTL(cents: number) {
 }
 
 function signHeaders(keyId: string, tsSec: number, body: string, secret: string) {
-  // Cabo: HMAC_SHA256(secret, `${timestamp}.${rawBody}`)
+  // İmza tam olarak `${tsSec}.${body}` üzerinden
   const signature = createHmac("sha256", secret).update(`${tsSec}.${body}`).digest("hex");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Cabo-Key-Id": keyId,
     "X-Cabo-Timestamp": String(tsSec),
     "X-Cabo-Signature": signature,
-    // Eski isimler de dursun:
-    "X-Key-Id": keyId,
-    "X-Timestamp": String(tsSec),
-    "X-Signature": signature,
   };
   return { headers, signature };
 }
 
 async function sendOnce(url: string, keyId: string, secret: string, orderId: number | null | undefined, payload: unknown) {
   const tsSec = Math.floor(Date.now() / 1000);
-  const body = JSON.stringify(payload);
+  const body  = JSON.stringify(payload);        // <-- Gönderilecek asıl string
   const { headers, signature } = signHeaders(keyId, tsSec, body, secret);
 
   let statusCode: number | null = null;
@@ -96,11 +91,10 @@ async function sendOnce(url: string, keyId: string, secret: string, orderId: num
   let errorText: string | null = null;
 
   try {
-    const r = await fetch(url, { method: "POST", headers, body });
+    const r = await fetch(url, { method: "POST", headers, body }); // <-- Aynı body stringi!
     const txt = await r.text().catch(() => "");
     statusCode = r.status;
-    const statusLine = `${r.status} ${r.statusText || ""}`.trim();
-    responseBody = `status: ${statusLine}\n` + (txt.length > 4096 ? txt.slice(0, 4096) + "…[truncated]" : txt);
+    responseBody = `status: ${r.status} ${r.statusText}\n` + (txt.length > 4096 ? txt.slice(0,4096) + "…[truncated]" : txt);
   } catch (e) {
     errorText = (e as Error).message || String(e);
   } finally {
@@ -138,13 +132,12 @@ export async function postPurchaseToCabo(args: {
   items: CaboItemIn[];
   total_cents: number;
 }) {
-  const url = process.env.CABO_WEBHOOK_URL || "";
+  const url    = process.env.CABO_WEBHOOK_URL || "";
   if (!url) return false;
-
-  const keyId = process.env.CABO_KEY_ID || "TEST_KEY";
+  const keyId  = process.env.CABO_KEY_ID || "TEST_KEY";
   const secret = process.env.CABO_HMAC_SECRET || "";
 
-  // 1) Yeni (önerilen) payload
+  // 1) Yeni (önerilen) şema
   const payloadNew = {
     orderNumber: String(args.orderId ?? args.cartId),
     caboRef: args.token || null,
@@ -161,7 +154,7 @@ export async function postPurchaseToCabo(args: {
   const okNew = await sendOnce(url, keyId, secret, args.orderId, payloadNew);
   if (okNew) return true;
 
-  // 2) Legacy payload (fallback)
+  // 2) Eski (legacy) şema – geriye dönük uyumluluk
   const payloadLegacy = {
     token: args.token || null,
     orderId: String(args.orderId ?? args.cartId),
@@ -173,6 +166,5 @@ export async function postPurchaseToCabo(args: {
       currency: "TRY",
     })),
   };
-  const okLegacy = await sendOnce(url, keyId, secret, args.orderId, payloadLegacy);
-  return okLegacy;
+  return await sendOnce(url, keyId, secret, args.orderId, payloadLegacy);
 }
