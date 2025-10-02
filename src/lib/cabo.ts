@@ -2,177 +2,190 @@
 import { createHmac } from "crypto";
 import { query } from "./db";
 
-/** ---------- Type helpers ---------- */
-type HeadersMap = Record<string, string>;
-
+/** ---- Types ---- */
 type Nullable<T> = T | null | undefined;
 
-export type CaboItemIn = {
+type HeadersDict = Record<string, string>;
+
+export interface CaboItemIn {
   product_id?: number;
   product_code?: string;
   quantity: number;
   unit_price_cents: number;
   final_price_cents: number;
-};
+}
 
-export type CaboOutboundPayloadNew = {
+interface OutboundItemNew {
+  productCode?: string;
+  productId?: number;
+  quantity: number;
+  unitPriceCharged?: number; // TL (unit)
+  lineTotal: number;         // TL (line)
+}
+
+interface OutboundPayloadNew {
   orderNumber: string;
   caboRef: string | null;
   email: string;
   linkId: number | string | null;
-  items: Array<{
-    productCode?: string;
-    productId?: number;
-    quantity: number;
-    unitPriceCharged: number; // TL (unit)
-    lineTotal: number;        // TL (unit)
-  }>;
-};
+  items: OutboundItemNew[];
+}
 
-export type CaboOutboundPayloadLegacy = {
+interface OutboundItemLegacy {
+  productCode?: string;
+  quantity: number;
+  amount: number;   // TL (line)
+  currency: "TRY";
+}
+
+interface OutboundPayloadLegacy {
   token: string | null;
   orderId: string;
   status: "confirmed";
-  products: Array<{
-    productCode?: string;
-    quantity: number;
-    amount: number; // TL (unit)
-    currency: "TRY";
-  }>;
-};
+  products: OutboundItemLegacy[];
+}
 
-type OutboundPayload = CaboOutboundPayloadNew | CaboOutboundPayloadLegacy;
+type OutboundPayload = OutboundPayloadNew | OutboundPayloadLegacy;
 
-type LogOutboundArgs = {
+interface LogOutboundArgs {
   orderId?: number | null;
   url: string;
   keyId: string;
   tsSec: number;
   signature: string;
   payload: OutboundPayload;
-  headers: HeadersMap;
+  headers: HeadersDict;
   statusCode?: number | null;
   responseBody?: string | null;
   errorText?: string | null;
-};
-
-/** ---------- Small utils ---------- */
-function toUnitTL(cents: number): number {
-  const v = Number(cents || 0) / 100;
-  // 4 ondalıkla yuvarla
-  return Math.round(v * 10000) / 10000;
 }
 
-function stableJsonStringify(value: unknown): string {
-  // Kanonik JSON (anahtar sıralı, gereksiz boşluksuz)
+/** ---- Helpers ---- */
+function toUnitTL(cents: number): number {
+  return Math.round((Number(cents || 0) / 100) * 10000) / 10000;
+}
+
+function stableStringify(input: unknown): string {
+  // Basit ve güvenli kanonik JSON: anahtarlar alfabetik, derinlikte sıralı
   const seen = new WeakSet<object>();
   const stringify = (v: unknown): string => {
     if (v === null || typeof v !== "object") return JSON.stringify(v);
-    if (seen.has(v as object)) return "null";
-    seen.add(v as object);
-
-    if (Array.isArray(v)) {
-      const arr = v.map(stringify);
-      return `[${arr.join(",")}]`;
-    }
+    if (Array.isArray(v)) return `[${v.map(stringify).join(",")}]`;
     const obj = v as Record<string, unknown>;
+    if (seen.has(obj)) return "{}";
+    seen.add(obj);
     const keys = Object.keys(obj).sort();
-    const parts: string[] = [];
-    for (const k of keys) {
-      parts.push(`${JSON.stringify(k)}:${stringify(obj[k])}`);
-    }
-    return `{${parts.join(",")}}`;
+    const body = keys.map((k) => `${JSON.stringify(k)}:${stringify(obj[k])}`).join(",");
+    return `{${body}}`;
   };
-  return stringify(value);
+  return stringify(input);
 }
 
-/** ---------- DB helpers ---------- */
-async function tableExists(name: string): Promise<boolean> {
-  const rows = (await query(
-    `SELECT COUNT(*) AS c
-     FROM information_schema.tables
-     WHERE table_schema = DATABASE() AND table_name = ?`,
-    [name]
-  )) as unknown as Array<{ c: number }>;
-  return Number(rows?.[0]?.c || 0) > 0;
-}
+function signHeaders(keyId: string, tsSec: number, body: string, secret: string) {
+  // Standart imza: HMAC_SHA256(secret, `${ts}.${rawBody}`)
+  const signature = createHmac("sha256", secret).update(`${tsSec}.${body}`).digest("hex");
 
-async function logOutbound(args: LogOutboundArgs): Promise<void> {
-  const payloadJson = JSON.stringify(args.payload);
-  const headersJson = JSON.stringify(args.headers);
-
-  if (await tableExists("outboundWebhookLog")) {
-    await query(
-      `INSERT INTO outboundWebhookLog
-         (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        args.orderId ?? null,
-        `${args.url}\nHEADERS: ${headersJson}`,
-        args.keyId,
-        args.tsSec,
-        args.signature,
-        args.statusCode ?? null,
-        payloadJson,
-        args.responseBody ?? null,
-        args.errorText ?? null,
-      ]
-    );
-  }
-
-  if (String(process.env.CABO_LOG_BOTH || "0") === "1" && (await tableExists("webhook_logs"))) {
-    await query(
-      `INSERT INTO webhook_logs (kind, payload)
-       VALUES ('outbound', CAST(? AS JSON))`,
-      [
-        JSON.stringify({
-          orderId: args.orderId ?? null,
-          url: args.url,
-          keyId: args.keyId,
-          tsSec: args.tsSec,
-          signature: args.signature,
-          statusCode: args.statusCode ?? null,
-          headers: args.headers,
-          payload: args.payload,
-          responseBody: args.responseBody ?? null,
-          errorText: args.errorText ?? null,
-        }),
-      ]
-    );
-  }
-}
-
-/** ---------- HMAC & headers ---------- */
-function signHeaders(
-  keyId: string,
-  tsSec: number,
-  rawBody: string,
-  secret: string
-): { headers: HeadersMap; signature: string; signatureCanonical: string } {
-  // Asıl imza: ts.body
-  const signature = createHmac("sha256", secret).update(`${tsSec}.${rawBody}`).digest("hex");
-  // Kanonik imza: ts.canonicalJson
-  const canonical = stableJsonStringify(JSON.parse(rawBody));
-  const signatureCanonical = createHmac("sha256", secret)
-    .update(`${tsSec}.${canonical}`)
+  // Kanonik JSON’la ikinci imza (platform destekliyorsa kullanır)
+  const canonicalBody = stableStringify(JSON.parse(body));
+  const canonicalSig = createHmac("sha256", secret)
+    .update(`${tsSec}.${canonicalBody}`)
     .digest("hex");
 
-  const headers: HeadersMap = {
+  const headers: HeadersDict = {
     "Content-Type": "application/json",
     "X-Cabo-Key-Id": keyId,
     "X-Cabo-Timestamp": String(tsSec),
     "X-Cabo-Signature": signature,
-    "X-Cabo-Signature-Canonical": signatureCanonical,
-    // Eski isimler (geriye uyumluluk)
+    // Eski isimler (uyumluluk)
     "X-Key-Id": keyId,
     "X-Timestamp": String(tsSec),
     "X-Signature": signature,
-    "X-Signature-Canonical": signatureCanonical,
+    // Kanonik imza (opsiyonel)
+    "X-Cabo-Signature-Canonical": canonicalSig,
   };
-  return { headers, signature, signatureCanonical };
+  return { headers, signature };
 }
 
-/** ---------- Sender ---------- */
+async function tableExists(name: string): Promise<boolean> {
+  const r = (await query(
+    `SELECT COUNT(*) AS c FROM information_schema.tables
+     WHERE table_schema = DATABASE() AND table_name = ?`,
+    [name]
+  )) as unknown as Array<{ c: number }>;
+  return Number(r?.[0]?.c || 0) > 0;
+}
+
+async function logOutbound(args: LogOutboundArgs): Promise<void> {
+  try {
+    const payloadJson = JSON.stringify(args.payload);
+    const headersJson = JSON.stringify(args.headers);
+
+    // Ana tablo
+    try {
+      const hasMain = await tableExists("outboundWebhookLog");
+      if (hasMain) {
+        try {
+          await query(
+            `INSERT INTO outboundWebhookLog
+               (orderId, url, keyId, tsSec, signature, statusCode, payloadJson, responseBody, errorText)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              args.orderId ?? null,
+              `${args.url}\nHEADERS: ${headersJson}`,
+              args.keyId,
+              args.tsSec,
+              args.signature,
+              args.statusCode ?? null,
+              payloadJson,
+              args.responseBody ?? null,
+              args.errorText ?? null,
+            ]
+          );
+        } catch {
+          /* swallow */
+        }
+      }
+    } catch {
+      /* swallow */
+    }
+
+    // Opsiyonel ikinci tablo (debug için)
+    if (String(process.env.CABO_LOG_BOTH || "0") === "1") {
+      try {
+        const hasWH = await tableExists("webhook_logs");
+        if (hasWH) {
+          try {
+            await query(
+              `INSERT INTO webhook_logs (kind, payload)
+               VALUES ('outbound', CAST(? AS JSON))`,
+              [
+                JSON.stringify({
+                  orderId: args.orderId ?? null,
+                  url: args.url,
+                  keyId: args.keyId,
+                  tsSec: args.tsSec,
+                  signature: args.signature,
+                  statusCode: args.statusCode ?? null,
+                  headers: args.headers,
+                  payload: args.payload,
+                  responseBody: args.responseBody ?? null,
+                  errorText: args.errorText ?? null,
+                }),
+              ]
+            );
+          } catch {
+            /* swallow */
+          }
+        }
+      } catch {
+        /* swallow */
+      }
+    }
+  } catch {
+    /* en dış katman: asla yukarı hata fırlatma */
+  }
+}
+
 async function sendOnce(
   url: string,
   keyId: string,
@@ -197,30 +210,35 @@ async function sendOnce(
   } catch (e) {
     errorText = (e as Error).message || String(e);
   } finally {
-    await logOutbound({
-      orderId: orderId ?? null,
-      url,
-      keyId,
-      tsSec,
-      signature,
-      payload,
-      headers,
-      statusCode,
-      responseBody,
-      errorText,
-    });
+    try {
+      await logOutbound({
+        orderId: orderId ?? null,
+        url,
+        keyId,
+        tsSec,
+        signature,
+        payload,
+        headers,
+        statusCode,
+        responseBody,
+        errorText,
+      });
+    } catch {
+      // log yazılamasa bile sessizce yut
+    }
   }
 
+  // 2xx başarı
   return statusCode != null && statusCode >= 200 && statusCode < 300;
 }
 
-/** ---------- Public API ---------- */
+/** ---- Public API ---- */
 export async function postPurchaseToCabo(args: {
   orderId?: number | null;
   cartId: string;
   email: string;
   token?: string | null;
-  linkId?: string | null;
+  linkId?: string | number | null;
   items: CaboItemIn[];
   total_cents: number;
 }): Promise<boolean> {
@@ -229,38 +247,48 @@ export async function postPurchaseToCabo(args: {
 
   const keyId = process.env.CABO_KEY_ID || "TEST_KEY";
   const secret = process.env.CABO_HMAC_SECRET || "";
+  const useIds = String(process.env.CABO_USE_PRODUCT_IDS || "0") === "1";
 
   // 1) Yeni (önerilen) payload
-  const payloadNew: CaboOutboundPayloadNew = {
+  const payloadNew: OutboundPayloadNew = {
     orderNumber: String(args.orderId ?? args.cartId),
     caboRef: args.token || null,
     email: args.email,
     linkId: args.linkId ?? null,
-    items: args.items.map((it) => ({
-      productCode: it.product_code || undefined,
-      productId: it.product_id || undefined,
-      quantity: Number(it.quantity || 1),
-      unitPriceCharged: toUnitTL(it.final_price_cents),
-      lineTotal: toUnitTL(it.final_price_cents * (it.quantity || 1)),
-    })),
+    items: args.items.map((it) => {
+      const qty = Number(it.quantity || 1);
+      const unitTL = toUnitTL(it.final_price_cents);
+      const lineTL = toUnitTL(it.final_price_cents * qty);
+      return {
+        productCode: !useIds ? it.product_code : undefined,
+        productId: useIds ? it.product_id : undefined,
+        quantity: qty,
+        unitPriceCharged: unitTL,
+        lineTotal: lineTL,
+      };
+    }),
   };
 
-  const okNew = await sendOnce(url, keyId, secret, args.orderId ?? null, payloadNew);
+  const okNew = await sendOnce(url, keyId, secret, args.orderId, payloadNew);
   if (okNew) return true;
 
   // 2) Legacy payload (fallback)
-  const payloadLegacy: CaboOutboundPayloadLegacy = {
+  const payloadLegacy: OutboundPayloadLegacy = {
     token: args.token || null,
     orderId: String(args.orderId ?? args.cartId),
     status: "confirmed",
-    products: args.items.map((it) => ({
-      productCode: it.product_code || undefined,
-      quantity: Number(it.quantity || 1),
-      amount: toUnitTL(it.final_price_cents * (it.quantity || 1)),
-      currency: "TRY",
-    })),
+    products: args.items.map((it) => {
+      const qty = Number(it.quantity || 1);
+      const lineTL = toUnitTL(it.final_price_cents * qty);
+      return {
+        productCode: it.product_code,
+        quantity: qty,
+        amount: lineTL,
+        currency: "TRY",
+      };
+    }),
   };
 
-  const okLegacy = await sendOnce(url, keyId, secret, args.orderId ?? null, payloadLegacy);
+  const okLegacy = await sendOnce(url, keyId, secret, args.orderId, payloadLegacy);
   return okLegacy;
 }
