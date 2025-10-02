@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { readCartId, readReferralCookie } from "@/lib/cookies";
+import { readCartId, readReferralCookie, type CookieStore } from "@/lib/cookies";
 import { ensureCartId, getCartItemsRaw, clearCart, recordOrder, getCartEmail } from "@/lib/queries";
 import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
 import { postPurchaseToCabo } from "@/lib/cabo";
 
 export async function POST() {
   try {
-    const c = await cookies();
+    const c = (await cookies()) as unknown as CookieStore;
     const cartId = await ensureCartId(readCartId(c));
 
     const email = await getCartEmail(cartId);
@@ -17,17 +17,17 @@ export async function POST() {
     if (!raw.length) return NextResponse.json({ error: "CART_EMPTY" }, { status: 400 });
 
     const ref = readReferralCookie(c);
-    const { items, total } = applyDiscountsToItems(raw as any, {
+    const { items, total } = applyDiscountsToItems(raw, {
       enabled: isReferralValid(ref),
       referral: ref,
     });
 
-    const orderId = await recordOrder(email, items, total).catch(() => null);
+    const orderId = await recordOrder(email, items, total).catch(() => 0);
 
     if (ref && isReferralValid(ref) && (process.env.CABO_WEBHOOK_URL || "").length > 0) {
       try {
         const byIds = process.env.CABO_USE_PRODUCT_IDS === "1";
-        const map = (() => { try { return JSON.parse(process.env.CABO_MAP_JSON || "{}"); } catch { return {}; } })();
+        const map = (() => { try { return JSON.parse(process.env.CABO_MAP_JSON || "{}"); } catch { return {}; } })() as Record<string, { code?: string }>;
 
         const caboItems = items.map((it) => ({
           product_id: byIds ? it.productId : undefined,
@@ -38,14 +38,21 @@ export async function POST() {
         }));
 
         await postPurchaseToCabo({
-          cartId, email, token: ref?.token, linkId: ref?.lid, items: caboItems, total_cents: total,
+          cartId, email,
+          token: ref?.token, linkId: ref?.lid,
+          items: caboItems, total_cents: total,
         });
-      } catch { /* demoda post hatasını yut */ }
+      } catch {
+        // prod'da loglayabilirsiniz; demoda akışı kesmeyelim
+      }
     }
 
     await clearCart(cartId);
     return NextResponse.json({ ok: true, cartId, orderId });
-  } catch (err: any) {
-    return NextResponse.json({ error: "UNEXPECTED", message: String(err?.message || err) }, { status: 500 });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "UNEXPECTED", message: String(err) },
+      { status: 500 }
+    );
   }
 }

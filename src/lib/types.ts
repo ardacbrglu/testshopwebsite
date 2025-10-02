@@ -5,7 +5,7 @@ export type Product = {
   description: string;
   imageUrl: string;
   priceCents: number;
-  isActive?: 0 | 1 | boolean;
+  isActive?: boolean | number | null;
   caboCode?: string | null;
 };
 
@@ -18,7 +18,7 @@ export type ApiCartItem = {
   unitPriceCents: number;
   discountPct: number;
   finalUnitPriceCents: number;
-  lineFinalCents?: number;
+  lineFinalCents: number;
 };
 
 export type ApiOrderItem = {
@@ -34,18 +34,7 @@ export type ApiOrderItem = {
 
 export type ApiOrder = {
   id: number;
-  createdAt: string; // ISO
+  createdAt: string;
   totalCents: number;
   items: ApiOrderItem[];
-};
-
-export type ApiCartResponse = {
-  cartId: string;
-  email?: string | null;
-  items: ApiCartItem[];
-  subtotalCents: number;
-  discountCents: number;
-  totalCents: number;
-  referral?: { token?: string; linkId?: string; ts?: number } | null;
-  orders?: ApiOrder[]; // e-posta varsa doldurulur
 };

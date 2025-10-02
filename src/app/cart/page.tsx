@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useState } from "react";
 import type { ApiCartItem, ApiOrder } from "@/lib/types";
 import CartLine from "@/components/CartLine";
@@ -13,7 +12,7 @@ type CartResp = {
   subtotalCents: number;
   discountCents: number;
   totalCents: number;
-  referral?: any;
+  referral?: unknown;
 };
 
 export default function CartPage() {
@@ -25,11 +24,10 @@ export default function CartPage() {
 
   async function refresh() {
     const r = await fetch("/api/cart", { cache: "no-store" });
-    const j = await r.json();
+    const j: CartResp = await r.json();
     setData(j);
     setEmail(j.email || "");
   }
-
   useEffect(() => { refresh(); }, []);
 
   async function setQty(productId: number, q: number) {
@@ -40,12 +38,10 @@ export default function CartPage() {
     });
     refresh();
   }
-
   async function remove(productId: number) {
     await fetch(`/api/cart?productId=${productId}`, { method: "DELETE" });
     refresh();
   }
-
   async function saveEmail() {
     const r = await fetch("/api/email", {
       method: "POST",
@@ -54,31 +50,33 @@ export default function CartPage() {
     });
     if (r.ok) { show({ type: "success", title: "E-posta kaydedildi" }); setOrders(null); refresh(); }
     else {
-      let j: any = {}; try { j = await r.json(); } catch {}
-      show({ type: "error", title: j?.error || "E-posta geçersiz" });
+      let j: unknown = {}; try { j = await r.json(); } catch {}
+      const msg = (j as { error?: string })?.error || "E-posta geçersiz";
+      show({ type: "error", title: msg });
     }
   }
-
   async function checkout() {
     const r = await fetch("/api/checkout", { method: "POST" });
-    let j: any = null; try { j = await r.json(); } catch {}
+    let j: unknown = null; try { j = await r.json(); } catch {}
+    const err = (j as { error?: string })?.error;
     if (r.ok) { show({ type: "success", title: "Satın alma tamamlandı" }); setOrders(null); refresh(); }
-    else if (j?.error === "EMAIL_REQUIRED") show({ type: "error", title: "Önce e-posta girin" });
-    else if (j?.error === "CART_EMPTY") show({ type: "error", title: "Sepet boş" });
+    else if (err === "EMAIL_REQUIRED") show({ type: "error", title: "Önce e-posta girin" });
+    else if (err === "CART_EMPTY") show({ type: "error", title: "Sepet boş" });
     else show({ type: "error", title: "İşlem başarısız" });
   }
-
   async function loadOrders() {
     setLoadingOrders(true);
     setOrders(null);
     const r = await fetch("/api/orders", { cache: "no-store" });
-    let j: any = {}; try { j = await r.json(); } catch {}
+    let j: unknown = {}; try { j = await r.json(); } catch {}
     setLoadingOrders(false);
     if (r.ok) {
-      setOrders(j.orders || []);
-      if (!j.orders?.length) show({ type: "info", title: "Kayıtlı sipariş bulunamadı" });
+      const arr = (j as { orders?: ApiOrder[] }).orders || [];
+      setOrders(arr);
+      if (!arr.length) show({ type: "info", title: "Kayıtlı sipariş bulunamadı" });
     } else {
-      if (j?.error === "EMAIL_REQUIRED") show({ type: "error", title: "Önce e-posta kaydedin" });
+      const err = (j as { error?: string })?.error;
+      if (err === "EMAIL_REQUIRED") show({ type: "error", title: "Önce e-posta kaydedin" });
       else show({ type: "error", title: "Geçmiş alınamadı" });
     }
   }
@@ -94,7 +92,7 @@ export default function CartPage() {
           <div className="p-6 text-neutral-400">Sepetiniz boş.</div>
         ) : (
           <div className="p-3">
-            {data.items.map((it: ApiCartItem) => (
+            {data.items.map((it) => (
               <CartLine
                 key={it.productId}
                 item={it}
@@ -152,7 +150,6 @@ export default function CartPage() {
         </div>
       </div>
 
-      {/* Geçmiş - butonla yüklendiğinde gösterilir */}
       {orders && (
         <div className="card p-4">
           <h2 className="text-lg font-semibold mb-2">Satın Alım Geçmişi</h2>

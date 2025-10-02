@@ -1,39 +1,35 @@
 import { query } from "./db";
 import { newId } from "./id";
-import type { Product, ApiOrder, ApiOrderItem, ApiCartItem } from "./types";
+import type { Product, ApiOrder, ApiOrderItem } from "./types";
+import type { RawCartRow, ApiCartItem } from "./discounter";
 
 /* helpers */
+type Row = Record<string, unknown>;
 const normEmail = (e: string) => String(e || "").trim().toLowerCase();
 
 async function listColumns(table: string): Promise<string[]> {
-  const rows = await query(
+  const rows = (await query(
     `SELECT column_name AS name FROM information_schema.columns
      WHERE table_schema = DATABASE() AND table_name = ?`,
     [table]
-  );
-  return (rows || []).map((r: any) => String(r.name));
+  )) as unknown as Array<{ name: string }>;
+  return (rows || []).map((r) => String(r.name));
 }
 function pick(cols: string[], re: RegExp) { return cols.find((c) => re.test(c)) || null; }
-async function colExists(t: string, c: string) { const cols = await listColumns(t); return cols.includes(c); }
 function esc(v: string) { return `'${String(v).replace(/'/g, "''")}'`; }
 
-/* schema */
+/* schema: yalnızca bizim tabloları garanti ediyoruz */
 let schemaOk = false;
 async function ensureSchema() {
   if (schemaOk) return;
 
-  await query(`
-    CREATE TABLE IF NOT EXISTS carts (
-      id VARCHAR(64) PRIMARY KEY,
-      email VARCHAR(255) NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
   await query(`
     CREATE TABLE IF NOT EXISTS cart_emails (
       cart_id VARCHAR(64) PRIMARY KEY,
       email   VARCHAR(255) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS cart_items (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -45,13 +41,16 @@ async function ensureSchema() {
       INDEX idx_cart (cart_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS orders (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      email VARCHAR(255) NOT NULL
-      -- total / created sütunlarını dinamik yöneteceğiz
+      email VARCHAR(255) NOT NULL,
+      total_cents INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS order_items (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -120,41 +119,27 @@ async function buildProductSelect(): Promise<PSel> {
   return selCache;
 }
 
-/* cart helpers */
+/* cart helpers: carts tablosuna yazmak ZORUNDA değiliz */
 export async function ensureCartId(cartId?: string | null) {
   await ensureSchema();
-  const id = cartId || newId();
-  const hasCreatedAt = await colExists("carts", "created_at");
-  if (hasCreatedAt) await query(`INSERT IGNORE INTO carts (id, created_at) VALUES (?, NOW())`, [id]);
-  else await query(`INSERT IGNORE INTO carts (id) VALUES (?)`, [id]);
-  return id;
+  return cartId || newId();
 }
-
-async function cartsHasEmail() { return await colExists("carts", "email"); }
 
 export async function setCartEmail(cartId: string, email: string) {
   await ensureSchema();
   const e = normEmail(email);
-  if (await cartsHasEmail()) {
-    await query(`UPDATE carts SET email = ? WHERE id = ?`, [e, cartId]).catch(async () => {
-      await query(`INSERT INTO cart_emails (cart_id, email) VALUES (?, ?)
-                   ON DUPLICATE KEY UPDATE email = VALUES(email)`, [cartId, e]);
-    });
-  } else {
-    await query(`INSERT INTO cart_emails (cart_id, email) VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE email = VALUES(email)`, [cartId, e]);
-  }
+  await query(
+    `INSERT INTO cart_emails (cart_id, email)
+     VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email)`,
+    [cartId, e]
+  );
 }
 
 export async function getCartEmail(cartId: string): Promise<string | null> {
   await ensureSchema();
-  if (await cartsHasEmail()) {
-    const r = await query(`SELECT email FROM carts WHERE id = ?`, [cartId]);
-    const e = r?.[0]?.email ? normEmail(r[0].email) : null;
-    if (e) return e;
-  }
-  const r2 = await query(`SELECT email FROM cart_emails WHERE cart_id = ?`, [cartId]);
-  return r2?.[0]?.email ? normEmail(r2[0].email) : null;
+  const r = (await query(`SELECT email FROM cart_emails WHERE cart_id = ?`, [cartId])) as unknown as Array<{ email?: string }>;
+  const e = r?.[0]?.email;
+  return e ? normEmail(e) : null;
 }
 
 export async function addCartItem(opts: { cartId: string; productId: number; quantity: number }) {
@@ -166,20 +151,22 @@ export async function addCartItem(opts: { cartId: string; productId: number; qua
   const tlCol = pick(pcols.filter((c) => !/(cent|cents|kurus)/i.test(c)), /(price|fiyat|amount|tl)/i);
   const priceSel = centsCol ? `\`${centsCol}\`` : (tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`);
 
-  const rows = await query(`SELECT ${priceSel} AS unit_price_cents FROM products WHERE id = ?`, [productId]);
+  const rows = (await query(
+    `SELECT ${priceSel} AS unit_price_cents FROM products WHERE id = ?`,
+    [productId]
+  )) as unknown as Array<{ unit_price_cents?: number }>;
   const unit = Number(rows?.[0]?.unit_price_cents ?? 0);
 
-  const hasCreatedAt = await colExists("cart_items", "created_at");
-  const cols = hasCreatedAt ? "cart_id, product_id, quantity, unit_price_cents, created_at" : "cart_id, product_id, quantity, unit_price_cents";
-  const vals = hasCreatedAt ? "?, ?, ?, ?, NOW()" : "?, ?, ?, ?";
-
   await query(
-    `INSERT INTO cart_items (${cols}) VALUES (${vals})
-     ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity),
-                              unit_price_cents = VALUES(unit_price_cents)`,
-    hasCreatedAt ? [cartId, productId, quantity, unit] : [cartId, productId, quantity, unit]
+    `INSERT INTO cart_items (cart_id, product_id, quantity, unit_price_cents)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE 
+       quantity = quantity + VALUES(quantity),
+       unit_price_cents = VALUES(unit_price_cents)`,
+    [cartId, productId, quantity, unit]
   );
 }
+
 export async function setItemQuantity(opts: { cartId: string; productId: number; quantity: number }) {
   await ensureSchema();
   const { cartId, productId, quantity } = opts;
@@ -187,18 +174,30 @@ export async function setItemQuantity(opts: { cartId: string; productId: number;
     await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
     return;
   }
-  await query(`UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`, [quantity, cartId, productId]);
+  await query(`UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`,
+    [quantity, cartId, productId]);
 }
+
 export async function removeItem(cartId: string, productId: number) {
   await ensureSchema();
   await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
 }
-export async function getCartItems(cartId: string) {
+
+export async function getCartItems(cartId: string): Promise<RawCartRow[]> {
   await ensureSchema();
   const sel = await buildProductSelect();
-  return await query(sel.cartJoin(cartId));
+  const rows = (await query(sel.cartJoin(cartId))) as unknown as Row[];
+  return rows.map((r) => ({
+    product_id: Number(r.product_id),
+    slug: String(r.slug),
+    name: String(r.name),
+    image_url: (r.image_url as string) || "",
+    quantity: Number(r.quantity),
+    unit_price_cents: Number(r.unit_price_cents),
+  }));
 }
 export const getCartItemsRaw = getCartItems;
+
 export async function clearCart(cartId: string) {
   await ensureSchema();
   await query(`DELETE FROM cart_items WHERE cart_id = ?`, [cartId]);
@@ -207,12 +206,33 @@ export async function clearCart(cartId: string) {
 /* products */
 export async function getAllProducts(): Promise<Product[]> {
   const sel = await buildProductSelect();
-  return await query(sel.allSql) as Product[];
+  const rows = (await query(sel.allSql)) as unknown as Row[];
+  return rows.map((r) => ({
+    id: Number(r.id),
+    slug: String(r.slug),
+    name: String(r.name),
+    description: (r.description as string) || "",
+    imageUrl: (r.imageUrl as string) || "",
+    priceCents: Number(r.priceCents ?? r.pricecents ?? r.price_cents ?? 0),
+    isActive: (r.isActive as boolean | number | null) ?? null,
+    caboCode: (r.caboCode as string | null) ?? null,
+  }));
 }
 export async function getProductBySlug(slug: string): Promise<Product | null> {
   const sel = await buildProductSelect();
-  const r = await query(sel.bySlugSql, [slug]);
-  return (r && r[0]) || null;
+  const rows = (await query(sel.bySlugSql, [slug])) as unknown as Row[];
+  const r = rows?.[0];
+  if (!r) return null;
+  return {
+    id: Number(r.id),
+    slug: String(r.slug),
+    name: String(r.name),
+    description: (r.description as string) || "",
+    imageUrl: (r.imageUrl as string) || "",
+    priceCents: Number(r.priceCents ?? r.pricecents ?? r.price_cents ?? 0),
+    isActive: (r.isActive as boolean | number | null) ?? null,
+    caboCode: (r.caboCode as string | null) ?? null,
+  };
 }
 
 /* orders */
@@ -221,45 +241,61 @@ async function pickOrderCols() {
   const totalCol =
     pick(cols, /^total_cents$/i) ||
     pick(cols, /(amount_cents|grand_total_cents)$/i) ||
+    pick(cols, /^grandTotalCents$/) ||
+    pick(cols, /^subtotalCents$/) ||
     pick(cols, /^total$/i) ||
-    pick(cols, /^amount$/i) || null;
+    pick(cols, /^amount$/i) ||
+    null;
 
   const createdCol =
     pick(cols, /^created_at$/i) ||
     pick(cols, /^createdAt$/) ||
     pick(cols, /^created$/i) ||
-    pick(cols, /(timestamp|ts)$/i) || null;
+    pick(cols, /(timestamp|ts)$/i) ||
+    null;
 
   return { totalCol, createdCol };
 }
 
 export async function recordOrder(email: string, items: ApiCartItem[], totalCents: number) {
   await ensureSchema();
+  const e = normEmail(email);
+
   let { totalCol } = await pickOrderCols();
   if (!totalCol) {
-    try { await query(`ALTER TABLE orders ADD COLUMN total_cents INT NOT NULL DEFAULT 0`); totalCol = "total_cents"; }
-    catch { /* perms yok -> totalsız kayıt da olur */ }
-  }
-  const e = normEmail(email);
-  let orderId: number;
-  if (totalCol) {
-    const r = await query(`INSERT INTO orders (email, \`${totalCol}\`) VALUES (?, ?)`, [e, totalCents]) as any;
-    orderId = Number(r.insertId);
-  } else {
-    const r = await query(`INSERT INTO orders (email) VALUES (?)`, [e]) as any;
-    orderId = Number(r.insertId);
+    await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_cents INT NOT NULL DEFAULT 0`);
+    totalCol = "total_cents";
   }
 
+  // INSERT sonucunu önce unknown'a daraltıp sonra güvenli tipe çeviriyoruz
+  const insUnknown = await query(
+    `INSERT INTO orders (email, \`${totalCol}\`) VALUES (?, ?)`,
+    [e, totalCents]
+  );
+  const ins = (insUnknown as unknown) as { insertId?: number };
+  const orderId = Number(ins?.insertId ?? 0);
+
   if (items.length) {
-    const ph = Array(items.length).fill("(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
-    const vals: any[] = [];
+    const ph = items.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const vals: unknown[] = [];
     for (const it of items) {
-      vals.push(orderId, it.productId ?? null, it.slug, it.name, it.imageUrl || "", it.quantity, it.unitPriceCents, it.finalUnitPriceCents, it.finalUnitPriceCents * it.quantity);
+      vals.push(
+        orderId,
+        it.productId ?? null,
+        it.slug,
+        it.name,
+        it.imageUrl || "",
+        it.quantity,
+        it.unitPriceCents,
+        it.finalUnitPriceCents,
+        it.finalUnitPriceCents * it.quantity
+      );
     }
     await query(
       `INSERT INTO order_items
        (order_id, product_id, slug, name, image_url, quantity, unit_price_cents, final_unit_price_cents, line_final_cents)
-       VALUES ${ph}`, vals
+       VALUES ${ph}`,
+      vals
     );
   }
 
@@ -273,22 +309,32 @@ export async function getOrdersByEmail(email: string): Promise<ApiOrder[]> {
   const totalExpr = totalCol ? `\`${totalCol}\`` : `0`;
   const createdExpr = createdCol ? `\`${createdCol}\`` : `NOW()`;
 
-  const orders = await query(
+  const orders = (await query(
     `SELECT id, ${totalExpr} AS total_cents, ${createdExpr} AS created_at
      FROM orders WHERE LOWER(email) = LOWER(?) ORDER BY id DESC LIMIT 20`,
     [e]
-  );
+  )) as unknown as Array<{ id: number; total_cents?: number; created_at: string }>;
 
   if (!orders.length) return [];
 
-  const ids = orders.map((o: any) => o.id);
+  const ids = orders.map((o) => Number(o.id));
   const inList = ids.map(() => "?").join(", ");
-  const items = await query(
+  const items = (await query(
     `SELECT order_id, product_id, slug, name, image_url, quantity, unit_price_cents,
             final_unit_price_cents, line_final_cents
      FROM order_items WHERE order_id IN (${inList}) ORDER BY id ASC`,
     ids
-  );
+  )) as unknown as Array<{
+    order_id: number;
+    product_id: number | null;
+    slug: string;
+    name: string;
+    image_url: string | null;
+    quantity: number;
+    unit_price_cents: number;
+    final_unit_price_cents: number;
+    line_final_cents: number;
+  }>;
 
   const byOrder: Record<number, ApiOrderItem[]> = {};
   for (const r of items) {
@@ -304,12 +350,12 @@ export async function getOrdersByEmail(email: string): Promise<ApiOrder[]> {
     });
   }
 
-  return orders.map((o: any) => {
+  return orders.map((o) => {
     const its = byOrder[o.id] || [];
     const computedTotal = its.reduce((s, it) => s + Number(it.lineFinalCents || 0), 0);
     return {
       id: o.id,
-      createdAt: new Date(o.created_at).toISOString(),
+      createdAt: new Date(String(o.created_at)).toISOString(),
       totalCents: o.total_cents ?? computedTotal,
       items: its,
     };

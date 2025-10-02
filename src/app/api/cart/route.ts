@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { readCartId, writeCartId, readReferralCookie } from "@/lib/cookies";
+import { readCartId, writeCartId, readReferralCookie, type CookieStore } from "@/lib/cookies";
 import {
   addCartItem, ensureCartId, getCartItemsRaw, setItemQuantity, removeItem,
   getProductBySlug, getCartEmail
@@ -8,18 +8,18 @@ import {
 import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
 
 export async function GET() {
-  const c = await cookies();
+  const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
   const ref = readReferralCookie(c);
   const raw = await getCartItemsRaw(cartId);
-  const { items, subtotal, total, discount } = applyDiscountsToItems(raw as any, {
+  const { items, subtotal, total, discount } = applyDiscountsToItems(raw, {
     enabled: isReferralValid(ref),
     referral: ref,
   });
 
-  const email: string | null = await getCartEmail(cartId);
+  const email = await getCartEmail(cartId);
 
   return NextResponse.json({
     cartId,
@@ -33,14 +33,14 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
-  const { productId, slug, quantity = 1 } = body || {};
+  const body = (await req.json().catch(() => ({}))) as { productId?: number; slug?: string; quantity?: number };
+  const { productId, slug, quantity = 1 } = body;
 
-  const c = await cookies();
+  const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
-  let pid = productId as number | undefined;
+  let pid = productId;
   if (!pid && slug) {
     const pr = await getProductBySlug(String(slug));
     if (!pr) return NextResponse.json({ error: "Product not found" }, { status: 404 });
@@ -53,11 +53,11 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
+  const body = (await req.json().catch(() => ({}))) as { productId?: number; quantity?: number };
   const { productId, quantity } = body || {};
   if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
 
-  const c = await cookies();
+  const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
 
   await setItemQuantity({ cartId, productId: Number(productId), quantity: Number(quantity) || 0 });
@@ -69,7 +69,7 @@ export async function DELETE(req: NextRequest) {
   const productId = Number(searchParams.get("productId"));
   if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
 
-  const c = await cookies();
+  const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
 
   await removeItem(cartId, productId);

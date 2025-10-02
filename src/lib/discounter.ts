@@ -1,10 +1,4 @@
-/**
- * İndirim hesaplayıcı
- * Env:
- *   CABO_MAP_JSON = {"product-a":{"discount":"10%"},"product-b":{"discount":"25%"}}
- *   CABO_ATTRIB_TTL_SEC = "180"   // referral geçerlilik süresi (saniye)
- */
-
+/** İndirim hesaplayıcı */
 export type RawCartRow = {
   product_id: number;
   slug: string;
@@ -21,9 +15,9 @@ export type ApiCartItem = {
   imageUrl: string;
   quantity: number;
   unitPriceCents: number;
-  discountPct: number;          // uygulanan indirim yüzdesi (0-100)
-  finalUnitPriceCents: number;  // indirimli birim fiyat
-  lineFinalCents: number;       // finalUnit * quantity
+  discountPct: number;
+  finalUnitPriceCents: number;
+  lineFinalCents: number;
 };
 
 type MapEntry = { code?: string; discount?: string | number };
@@ -56,7 +50,7 @@ export function isReferralValid(attrib?: { ts?: number | null } | null): boolean
   return now - ts <= ttl;
 }
 
-/** Bir slug için indirim uygula; sadece yüzde/son fiyat döndürür */
+/** Slug için indirim uygula */
 function discountForSlug(slug: string, unit: number) {
   const map = loadMap();
   const pct = normalizePct(map[slug]?.discount);
