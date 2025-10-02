@@ -1,3 +1,4 @@
+// src/lib/cabo.ts
 import { createHmac } from "crypto";
 import { query } from "./db";
 
@@ -63,6 +64,7 @@ function toUnitTL(cents: number): number {
   return Math.round((Number(cents || 0) / 100) * 10000) / 10000;
 }
 
+// Kanonik JSON (anahtarlar alfabetik) — canonical imza için
 function stableStringify(input: unknown): string {
   const seen = new WeakSet<object>();
   const stringify = (v: unknown): string => {
@@ -78,17 +80,20 @@ function stableStringify(input: unknown): string {
   return stringify(input);
 }
 
-function signHeaders(keyId: string, tsSec: number, body: string, secret: string) {
-  // 1) Standart imza: HMAC_SHA256(secret, `${ts}.${rawBody}`)
+function signHeaders(keyId: string, tsSec: number, body: string, secretRaw: string) {
+  // *** EN ÖNEMLİ DÜZELTME: secret'ı trim et ***
+  const secret = secretRaw.trim();
+
+  // Standart imza: HMAC_SHA256(secret, `${ts}.${rawBody}`)
   const signature = createHmac("sha256", secret).update(`${tsSec}.${body}`).digest("hex");
 
-  // 2) Kanonik JSON imzası (opsiyonel)
+  // Kanonik JSON’la ikinci imza (alıcı taraf destekliyorsa)
   let canonicalSig = "";
   try {
     const canonicalBody = stableStringify(JSON.parse(body));
     canonicalSig = createHmac("sha256", secret).update(`${tsSec}.${canonicalBody}`).digest("hex");
   } catch {
-    /* ignore canonical if body isn't JSON */
+    /* yut */
   }
 
   const headers: HeadersDict = {
@@ -96,12 +101,19 @@ function signHeaders(keyId: string, tsSec: number, body: string, secret: string)
     "X-Cabo-Key-Id": keyId,
     "X-Cabo-Timestamp": String(tsSec),
     "X-Cabo-Signature": signature,
-    // Eski isimler (uyumluluk)
+    // uyumluluk için eski isimler
     "X-Key-Id": keyId,
     "X-Timestamp": String(tsSec),
     "X-Signature": signature,
   };
   if (canonicalSig) headers["X-Cabo-Signature-Canonical"] = canonicalSig;
+
+  // İsteğe bağlı debug (sızıntı yok): yalnızca CABO_DEBUG_SIGN=1 ise
+  if (String(process.env.CABO_DEBUG_SIGN || "0") === "1") {
+    const base = `${tsSec}.${body}`;
+    const baseSha = createHmac("sha256", "dbg").update(base).digest("hex"); // gizli değil
+    headers["X-Cabo-Debug"] = `ts=${tsSec};len=${body.length};baseSha=${baseSha}`;
+  }
 
   return { headers, signature };
 }
@@ -139,33 +151,31 @@ async function logOutbound(args: LogOutboundArgs): Promise<void> {
           ]
         );
       }
-    } catch {}
+    } catch { /* yut */ }
 
-    if (String(process.env.CABO_LOG_BOTH || "0") === "1") {
+    if (String(process.env.CABO_LOG_BOTH || "0") === "1" && (await tableExists("webhook_logs"))) {
       try {
-        if (await tableExists("webhook_logs")) {
-          await query(
-            `INSERT INTO webhook_logs (kind, payload)
-             VALUES ('outbound', CAST(? AS JSON))`,
-            [
-              JSON.stringify({
-                orderId: args.orderId ?? null,
-                url: args.url,
-                keyId: args.keyId,
-                tsSec: args.tsSec,
-                signature: args.signature,
-                statusCode: args.statusCode ?? null,
-                headers: args.headers,
-                payload: args.payload,
-                responseBody: args.responseBody ?? null,
-                errorText: args.errorText ?? null,
-              }),
-            ]
-          );
-        }
-      } catch {}
+        await query(
+          `INSERT INTO webhook_logs (kind, payload)
+           VALUES ('outbound', CAST(? AS JSON))`,
+          [
+            JSON.stringify({
+              orderId: args.orderId ?? null,
+              url: args.url,
+              keyId: args.keyId,
+              tsSec: args.tsSec,
+              signature: args.signature,
+              statusCode: args.statusCode ?? null,
+              headers: args.headers,
+              payload: args.payload,
+              responseBody: args.responseBody ?? null,
+              errorText: args.errorText ?? null,
+            }),
+          ]
+        );
+      } catch { /* yut */ }
     }
-  } catch {}
+  } catch { /* en dış kalkan */ }
 }
 
 async function sendOnce(
@@ -176,6 +186,8 @@ async function sendOnce(
   payload: OutboundPayload
 ): Promise<boolean> {
   const tsSec = Math.floor(Date.now() / 1000);
+
+  // Tek bir JSON.stringify: HEM imza HEM fetch BODY aynı stringi kullanır
   const body = JSON.stringify(payload);
   const { headers, signature } = signHeaders(keyId, tsSec, body, secret);
 
@@ -223,10 +235,11 @@ export async function postPurchaseToCabo(args: {
   if (!url) return false;
 
   const keyId = (process.env.CABO_KEY_ID || "TEST_KEY").trim();
-  const secret = (process.env.CABO_HMAC_SECRET || "").trim();
+  const secret = (process.env.CABO_HMAC_SECRET || "").trim(); // *** TRIM ***
+
   const useIds = String(process.env.CABO_USE_PRODUCT_IDS || "0") === "1";
 
-  // 1) Yeni payload
+  // 1) Yeni (önerilen) payload
   const payloadNew: OutboundPayloadNew = {
     orderNumber: String(args.orderId ?? args.cartId),
     caboRef: args.token || null,
@@ -266,6 +279,5 @@ export async function postPurchaseToCabo(args: {
     }),
   };
 
-  const okLegacy = await sendOnce(url, keyId, secret, args.orderId, payloadLegacy);
-  return okLegacy;
+  return await sendOnce(url, keyId, secret, args.orderId, payloadLegacy);
 }
