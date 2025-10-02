@@ -1,7 +1,7 @@
 import { createHmac } from "crypto";
 import { query } from "./db";
 
-/* yardımcılar */
+/* --------- DB helpers --------- */
 async function tableExists(name: string): Promise<boolean> {
   const rows = (await query(
     `SELECT COUNT(*) AS c
@@ -12,19 +12,20 @@ async function tableExists(name: string): Promise<boolean> {
   return Number(rows?.[0]?.c || 0) > 0;
 }
 
-/** Başarılı/başarısız her durumda outbound log yaz */
-export async function logOutboundWebhook(args: {
+async function logOutboundWebhook(args: {
   orderId?: number | null;
   url: string;
   keyId: string;
   tsSec: number;
   signature: string;
   payload: unknown;
+  headers: Record<string, string>;
   statusCode?: number | null;
   responseBody?: string | null;
   errorText?: string | null;
 }) {
   const payloadJson = JSON.stringify(args.payload ?? {});
+  const headersJson = JSON.stringify(args.headers ?? {});
   if (await tableExists("outboundWebhookLog")) {
     await query(
       `INSERT INTO outboundWebhookLog
@@ -32,7 +33,7 @@ export async function logOutboundWebhook(args: {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         args.orderId ?? null,
-        args.url,
+        `${args.url}\nHEADERS: ${headersJson}`,
         args.keyId,
         args.tsSec,
         args.signature,
@@ -44,7 +45,6 @@ export async function logOutboundWebhook(args: {
     );
     return;
   }
-
   if (await tableExists("webhook_logs")) {
     await query(
       `INSERT INTO webhook_logs (kind, payload)
@@ -57,6 +57,7 @@ export async function logOutboundWebhook(args: {
           tsSec: args.tsSec,
           signature: args.signature,
           statusCode: args.statusCode ?? null,
+          headers: args.headers ?? {},
           payload: JSON.parse(payloadJson),
           responseBody: args.responseBody ?? null,
           errorText: args.errorText ?? null,
@@ -66,20 +67,22 @@ export async function logOutboundWebhook(args: {
   }
 }
 
-/** Cabo purchase POST – hata fırlatmaz; daima log yazar. */
+/* --------- Cabo POST --------- */
+type CaboItemIn = {
+  product_id?: number;
+  product_code?: string;
+  quantity: number;
+  unit_price_cents: number;
+  final_price_cents: number;
+};
+
 export async function postPurchaseToCabo(args: {
   orderId?: number | null;
   cartId: string;
   email: string;
-  token?: string | null;
+  token?: string | null;   // referral token (caboRef)
   linkId?: string | null;
-  items: Array<{
-    product_id?: number;
-    product_code?: string;
-    quantity: number;
-    unit_price_cents: number;
-    final_price_cents: number;
-  }>;
+  items: CaboItemIn[];
   total_cents: number;
 }): Promise<boolean> {
   const url = process.env.CABO_WEBHOOK_URL || "";
@@ -89,44 +92,55 @@ export async function postPurchaseToCabo(args: {
   const secret = process.env.CABO_HMAC_SECRET || "";
   const tsSec = Math.floor(Date.now() / 1000);
 
+  // ---- Yeni format payload (TL birimi; cents -> /100) ----
+  const toUnit = (cents: number) => Math.round((Number(cents || 0) / 100) * 10000) / 10000;
   const payload = {
-    type: "purchase",
-    cart_id: args.cartId,
-    order_id: args.orderId ?? null,
+    orderNumber: String(args.orderId ?? args.cartId),
+    caboRef: args.token || null,
+    // opsiyonel alanlar – server parse etmiyorsa yok sayar
     email: args.email,
-    token: args.token || null,
-    link_id: args.linkId || null,
-    total_cents: args.total_cents,
-    items: args.items,
-    ts: tsSec,
+    linkId: args.linkId ?? null,
+    items: args.items.map((it) => ({
+      // En az bir tanesi dolu olmalı: productCode | productId | productSlug
+      productCode: it.product_code || undefined,
+      productId: it.product_id || undefined,
+      // productSlug'ı bilmiyoruz; code/id yoksa server zaten reddedecek
+      quantity: Number(it.quantity || 1),
+      unitPriceCharged: toUnit(it.final_price_cents),               // birim fiyat (indirimli)
+      lineTotal: toUnit(it.final_price_cents * (it.quantity || 1)), // satır toplamı
+    })),
   };
+
   const body = JSON.stringify(payload);
-  const signature = createHmac("sha256", secret).update(body).digest("hex");
+
+  // ---- HMAC: `${ts}.${rawBody}` ----
+  const signature = createHmac("sha256", secret)
+    .update(`${tsSec}.${body}`)
+    .digest("hex");
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Cabo-Key-Id": keyId,
+    "X-Cabo-Timestamp": String(tsSec),
+    "X-Cabo-Signature": signature,
+    // Eski başlık isimleri de kabul ediliyor – güvenlik için ekleyelim:
+    "X-Key-Id": keyId,
+    "X-Timestamp": String(tsSec),
+    "X-Signature": signature,
+  };
 
   let statusCode: number | null = null;
   let responseBody: string | null = null;
   let errorText: string | null = null;
 
   try {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Cabo-Key-Id": keyId,
-        "X-Cabo-Timestamp": String(tsSec),
-        "X-Cabo-Signature": signature,
-      },
-      body,
-    });
-
+    const r = await fetch(url, { method: "POST", headers, body });
     const text = await r.text().catch(() => "");
     statusCode = r.status;
-
-    // hata analizi daha okunaklı olsun diye statusText'i de ekleyelim
     const statusLine = `${r.status} ${r.statusText || ""}`.trim();
-    // response çok uzun olursa DB’yi şişirmeyelim (2KB ile sınırla)
-    const truncated = text.length > 2048 ? text.slice(0, 2048) + "…[truncated]" : text;
-    responseBody = `status: ${statusLine}\n${truncated}`;
+    responseBody =
+      `status: ${statusLine}\n` +
+      (text.length > 4096 ? text.slice(0, 4096) + "…[truncated]" : text);
   } catch (e) {
     errorText = (e as Error).message || String(e);
   } finally {
@@ -137,6 +151,7 @@ export async function postPurchaseToCabo(args: {
       tsSec,
       signature,
       payload,
+      headers,
       statusCode,
       responseBody,
       errorText,
