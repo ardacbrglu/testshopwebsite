@@ -8,9 +8,10 @@ import AddToCartWidget from "@/components/AddToCartWidget";
 export default async function ProductPage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const product = await getProductBySlug(params.slug);
+  const { slug } = await params;                // ⬅️ Next 15: params beklenir
+  const product = await getProductBySlug(slug);
   if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 
   const c = (await cookies()) as unknown as CookieStore;

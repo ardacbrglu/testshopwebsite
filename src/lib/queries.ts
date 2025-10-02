@@ -119,7 +119,7 @@ async function buildProductSelect(): Promise<PSel> {
   return selCache;
 }
 
-/* cart helpers: carts tablosuna yazmak ZORUNDA değiliz */
+/* cart helpers */
 export async function ensureCartId(cartId?: string | null) {
   await ensureSchema();
   return cartId || newId();
@@ -183,7 +183,7 @@ export async function removeItem(cartId: string, productId: number) {
   await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
 }
 
-export async function getCartItems(cartId: string): Promise<RawCartRow[]> {
+export async function getCartItems(cartId: string) {
   await ensureSchema();
   const sel = await buildProductSelect();
   const rows = (await query(sel.cartJoin(cartId))) as unknown as Row[];
@@ -194,7 +194,7 @@ export async function getCartItems(cartId: string): Promise<RawCartRow[]> {
     image_url: (r.image_url as string) || "",
     quantity: Number(r.quantity),
     unit_price_cents: Number(r.unit_price_cents),
-  }));
+  })) as RawCartRow[];
 }
 export const getCartItemsRaw = getCartItems;
 
@@ -254,26 +254,40 @@ async function pickOrderCols() {
     pick(cols, /(timestamp|ts)$/i) ||
     null;
 
-  return { totalCol, createdCol };
+  return { cols, totalCol, createdCol };
 }
 
+/** orders tablosu şemasına UYAN dinamik insert */
 export async function recordOrder(email: string, items: ApiCartItem[], totalCents: number) {
   await ensureSchema();
   const e = normEmail(email);
 
-  let { totalCol } = await pickOrderCols();
-  if (!totalCol) {
-    await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_cents INT NOT NULL DEFAULT 0`);
-    totalCol = "total_cents";
-  }
+  // ara toplam & indirim
+  const subtotal = items.reduce((s, it) => s + it.unitPriceCents * it.quantity, 0);
+  const discountTotal = Math.max(0, subtotal - totalCents);
 
-  // INSERT sonucunu önce unknown'a daraltıp sonra güvenli tipe çeviriyoruz
+  const { cols, totalCol } = await pickOrderCols();
+  const insertCols: string[] = ["email"];
+  const values: unknown[] = [e];
+  const placeholders: string[] = ["?"];
+
+  // total_cents
+  if (totalCol) { insertCols.push(`\`${totalCol}\``); placeholders.push("?"); values.push(totalCents); }
+
+  // varsa şu alanları da doldur
+  if (cols.includes("orderNumber")) { insertCols.push("orderNumber"); placeholders.push("?"); values.push(`TS-${Date.now()}-${Math.floor(Math.random()*1e6)}`); }
+  if (cols.includes("currency"))    { insertCols.push("currency");    placeholders.push("?"); values.push("TRY"); }
+  if (cols.includes("subtotalCents"))        { insertCols.push("subtotalCents");        placeholders.push("?"); values.push(subtotal); }
+  if (cols.includes("discountTotalCents"))   { insertCols.push("discountTotalCents");   placeholders.push("?"); values.push(discountTotal); }
+  if (cols.includes("grandTotalCents"))      { insertCols.push("grandTotalCents");      placeholders.push("?"); values.push(totalCents); }
+
   const insUnknown = await query(
-    `INSERT INTO orders (email, \`${totalCol}\`) VALUES (?, ?)`,
-    [e, totalCents]
+    `INSERT INTO orders (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`,
+    values
   );
   const ins = (insUnknown as unknown) as { insertId?: number };
   const orderId = Number(ins?.insertId ?? 0);
+  if (!orderId) throw new Error("ORDER_INSERT_FAILED");
 
   if (items.length) {
     const ph = items.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");

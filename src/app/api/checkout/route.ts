@@ -22,7 +22,8 @@ export async function POST() {
       referral: ref,
     });
 
-    const orderId = await recordOrder(email, items, total).catch(() => 0);
+    // DB'ye yaz; hata olursa 500 dön
+    const orderId = await recordOrder(email, items, total);
 
     if (ref && isReferralValid(ref) && (process.env.CABO_WEBHOOK_URL || "").length > 0) {
       try {
@@ -42,9 +43,7 @@ export async function POST() {
           token: ref?.token, linkId: ref?.lid,
           items: caboItems, total_cents: total,
         });
-      } catch {
-        // prod'da loglayabilirsiniz; demoda akışı kesmeyelim
-      }
+      } catch { /* webhook hatasını akışı bozmadan geç */ }
     }
 
     await clearCart(cartId);
