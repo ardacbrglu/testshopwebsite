@@ -13,7 +13,12 @@ import {
   recordOrder,
   getCartEmail,
 } from "@/lib/queries";
-import { applyDiscountsToItems, getAttributionScope, loadMap, isSlugEligible } from "@/lib/discounter";
+import {
+  applyDiscountsToItems,
+  getAttributionScope,
+  loadMap,
+  isSlugEligible,
+} from "@/lib/discounter";
 import { postPurchaseToCabo } from "@/lib/cabo";
 
 export async function POST() {
@@ -60,7 +65,8 @@ export async function POST() {
           cartId,
           email,
           token: ref?.token || null,
-          linkId: (ref?.lid as any) ?? null,
+          // 🔧 DÜZELTİLEN SATIR: any cast yok, doğal birlik: string | number | null
+          linkId: ref?.lid ?? null,
           items: caboItems,
           total_cents: total,
         });
