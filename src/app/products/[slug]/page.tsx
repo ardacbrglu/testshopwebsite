@@ -1,7 +1,10 @@
 import { getProductBySlug } from "@/lib/queries";
 import { cookies } from "next/headers";
 import { readReferralCookie, type CookieStore } from "@/lib/cookies";
-import { isReferralValid, applyDiscountsToItems } from "@/lib/discounter";
+import { applyDiscountsToItems } from "@/lib/discounter";
+// DOĞRU
+import { isReferralValid } from "@/lib/cookies";
+
 import { formatTRY } from "@/lib/money";
 import AddToCartWidget from "@/components/AddToCartWidget";
 

@@ -3,7 +3,9 @@ import { formatTRY } from "@/lib/money";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { readReferralCookie, type CookieStore } from "@/lib/cookies";
-import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
+import { applyDiscountsToItems } from "@/lib/discounter";
+// DOĞRU
+import { isReferralValid } from "@/lib/cookies";
 
 export default async function ProductsPage() {
   const products = await getAllProducts();

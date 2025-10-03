@@ -1,4 +1,6 @@
-/** İndirim hesaplayıcı */
+import { isReferralValid, type ReferralAttrib } from "./cookies";
+
+/** DB’den ham gelen satır */
 export type RawCartRow = {
   product_id: number;
   slug: string;
@@ -8,6 +10,7 @@ export type RawCartRow = {
   unit_price_cents: number;
 };
 
+/** API’de döneceğimiz satır */
 export type ApiCartItem = {
   productId: number;
   slug: string;
@@ -20,15 +23,22 @@ export type ApiCartItem = {
   lineFinalCents: number;
 };
 
-type MapEntry = { code?: string; discount?: string | number };
-type CaboMap = Record<string, MapEntry>;
+/* ---- Attribution (landing/sitewide) ---- */
+export type AttributionScope = "landing" | "sitewide";
+export type MapEntry = { code?: string; discount?: string | number };
+export type CaboMap = Record<string, MapEntry>;
 
-function loadMap(): CaboMap {
+export function getAttributionScope(): AttributionScope {
+  const s = (process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").toLowerCase();
+  return s === "landing" ? "landing" : "sitewide";
+}
+
+export function loadMap(): CaboMap {
   try { return JSON.parse(process.env.CABO_MAP_JSON || "{}"); }
   catch { return {}; }
 }
 
-function normalizePct(p?: string | number): number {
+export function normalizePct(p?: string | number): number {
   if (p == null) return 0;
   if (typeof p === "number") return p <= 1 ? Math.round(p * 100) : Math.round(p);
   const s = String(p).trim();
@@ -39,41 +49,37 @@ function normalizePct(p?: string | number): number {
   return n <= 1 ? Math.round(n * 100) : Math.round(n);
 }
 
-/** Referral cookie TTL kontrolü (saniye) */
-export function isReferralValid(attrib?: { ts?: number | null } | null): boolean {
-  if (!attrib) return false;
-  const now = Math.floor(Date.now() / 1000);
-  const ts = Number(attrib.ts || 0);
-  if (ts <= 0) return false;
-  if (now < ts) return false;
-  const ttl = Number(process.env.CABO_ATTRIB_TTL_SEC || 3600);
-  return now - ts <= ttl;
+export function isSlugEligible(
+  scope: AttributionScope,
+  map: CaboMap,
+  slug: string,
+  ref: { slug?: string | null } | null
+): boolean {
+  if (!map[slug]) return false;
+  if (scope === "sitewide") return true;
+  const refSlug = (ref?.slug || "").trim();
+  return !!refSlug && refSlug === slug;
 }
 
-/** Slug için indirim uygula */
-function discountForSlug(slug: string, unit: number) {
-  const map = loadMap();
-  const pct = normalizePct(map[slug]?.discount);
-  const finalUnit = Math.max(0, Math.round(unit * (1 - pct / 100)));
-  return { pct, finalUnit };
-}
-
-/** rows: getCartItemsRaw; ref geçerliyse indirim uygular */
+/** İndirim uygula (landing/sitewide kurallarıyla) */
 export function applyDiscountsToItems(
   rows: RawCartRow[],
-  opts?: { enabled?: boolean; referral?: { ts?: number | null } | null }
+  opts?: { enabled?: boolean; referral?: ReferralAttrib | null }
 ) {
+  const map   = loadMap();
+  const scope = getAttributionScope();
   const enabled = !!opts?.enabled && isReferralValid(opts?.referral);
 
   const items: ApiCartItem[] = rows.map((r) => {
     const unit = Number(r.unit_price_cents || 0);
     let pct = 0;
     let finalUnit = unit;
-    if (enabled) {
-      const d = discountForSlug(r.slug, unit);
-      pct = d.pct;
-      finalUnit = d.finalUnit;
+
+    if (enabled && isSlugEligible(scope, map, r.slug, opts?.referral ?? null)) {
+      pct = normalizePct(map[r.slug]?.discount);
+      finalUnit = Math.max(0, Math.round(unit * (1 - pct / 100)));
     }
+
     const qty = Number(r.quantity || 0);
     return {
       productId: Number(r.product_id),
@@ -89,7 +95,7 @@ export function applyDiscountsToItems(
   });
 
   const subtotal = items.reduce((s, it) => s + it.unitPriceCents * it.quantity, 0);
-  const total = items.reduce((s, it) => s + it.finalUnitPriceCents * it.quantity, 0);
+  const total    = items.reduce((s, it) => s + it.finalUnitPriceCents * it.quantity, 0);
   const discount = Math.max(0, subtotal - total);
 
   return { items, subtotal, total, discount };

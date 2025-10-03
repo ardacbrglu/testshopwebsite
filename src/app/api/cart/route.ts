@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { readCartId, writeCartId, readReferralCookie, type CookieStore } from "@/lib/cookies";
+import { readCartId, writeCartId, readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
 import {
   addCartItem, ensureCartId, getCartItemsRaw, setItemQuantity, removeItem,
   getProductBySlug, getCartEmail
 } from "@/lib/queries";
-import { applyDiscountsToItems, isReferralValid } from "@/lib/discounter";
+import { applyDiscountsToItems } from "@/lib/discounter";
 
 export async function GET() {
   const c = (await cookies()) as unknown as CookieStore;
