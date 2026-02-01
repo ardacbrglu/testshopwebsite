@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { getProductBySlug } from "@/lib/queries";
 import { cookies } from "next/headers";
 import { readReferralCookie, type CookieStore } from "@/lib/cookies";
@@ -13,7 +16,7 @@ export default async function ProductPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = await params;                // ⬅️ Next 15: params beklenir
+  const { slug } = await params; // ⬅️ Next 15: params beklenir
   const product = await getProductBySlug(slug);
   if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 

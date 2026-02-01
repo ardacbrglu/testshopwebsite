@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { getAllProducts } from "@/lib/queries";
 import { formatTRY } from "@/lib/money";
 import Link from "next/link";
@@ -19,7 +22,7 @@ export default async function ProductsPage() {
       <h1 className="text-3xl font-semibold mb-6">Ürünler</h1>
       <div className="grid md:grid-cols-3 gap-6">
         {products.map((p) => {
-          const price = p.priceCents;                          // <-- const (lint ok)
+          const price = p.priceCents; // <-- const (lint ok)
           let pct = 0;
           let finalPrice = p.priceCents;
           if (enabled) {
