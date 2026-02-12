@@ -9,99 +9,65 @@ const normEmail = (e: string) => String(e || "").trim().toLowerCase();
 
 async function listColumns(table: string): Promise<string[]> {
   const rows = (await query(
-    `SELECT column_name AS name
-     FROM information_schema.columns
+    `SELECT column_name AS name FROM information_schema.columns
      WHERE table_schema = DATABASE() AND table_name = ?`,
     [table]
   )) as unknown as Array<{ name: string }>;
   return (rows || []).map((r) => String(r.name));
 }
-
-function pick(cols: string[], re: RegExp) {
-  return cols.find((c) => re.test(c)) || null;
-}
-
-type CartsIdInfo = {
-  exists: boolean;
-  dataType: string;     // int, bigint, varchar, ...
-  columnType: string;   // int(11), varchar(64), ...
-  isAutoInc: boolean;
-};
-
-async function getCartsIdInfo(): Promise<CartsIdInfo> {
-  const rows = (await query(
-    `SELECT data_type AS dataType, column_type AS columnType, extra AS extraInfo
-     FROM information_schema.columns
-     WHERE table_schema = DATABASE()
-       AND table_name = 'carts'
-       AND column_name = 'id'
-     LIMIT 1`
-  )) as unknown as Array<{ dataType: string; columnType: string; extraInfo: string | null }>;
-
-  const r = rows?.[0];
-  if (!r) {
-    return { exists: false, dataType: "", columnType: "", isAutoInc: false };
-  }
-  const extra = String(r.extraInfo || "").toLowerCase();
-  return {
-    exists: true,
-    dataType: String(r.dataType || "").toLowerCase(),
-    columnType: String(r.columnType || "").toLowerCase(),
-    isAutoInc: extra.includes("auto_increment"),
-  };
-}
-
-function isNumericType(dt: string) {
-  return ["int", "bigint", "mediumint", "smallint", "tinyint", "decimal", "numeric"].includes(dt);
-}
-function isStringType(dt: string) {
-  return ["varchar", "char", "text", "mediumtext", "longtext"].includes(dt);
-}
+function pick(cols: string[], re: RegExp) { return cols.find((c) => re.test(c)) || null; }
 
 /* schema: yalnızca bizim tabloları garanti ediyoruz */
 let schemaOk = false;
-
 async function ensureSchema() {
   if (schemaOk) return;
 
-  // carts var mı? yoksa minimal bir carts yarat (string id ile)
-  const cartsCols = await listColumns("carts").catch(() => []);
-  if (!cartsCols.length) {
-    await query(`
-      CREATE TABLE IF NOT EXISTS carts (
-        id VARCHAR(64) PRIMARY KEY
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
+  // ✅ PRODUCTS: Railway DB boşsa /products patlıyor. O yüzden products yoksa yarat + seed et.
+  // Not: Eğer products zaten varsa dokunmaz.
+  await query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      slug VARCHAR(255) NOT NULL UNIQUE,
+      name VARCHAR(255) NOT NULL,
+      description TEXT NULL,
+      image_url TEXT NULL,
+      price_cents INT NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      product_code VARCHAR(255) NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // ✅ SEED: boşsa demo ürünleri ekle (idempotent)
+  const pcount = (await query(`SELECT COUNT(*) AS c FROM products`)) as unknown as Array<{ c?: number }>;
+  const c = Number(pcount?.[0]?.c ?? 0);
+  if (c === 0) {
+    await query(
+      `INSERT INTO products (slug, name, description, image_url, price_cents, is_active, product_code)
+       VALUES
+       ('product-a','Product A','Demo product A','',4999999,1,NULL),
+       ('product-b','Product B','Demo product B','',1999999,1,NULL),
+       ('product-c','Product C','Demo product C','',999999,1,NULL),
+       ('product-d','Product D','Demo product D','',1499999,1,NULL),
+       ('product-e','Product E','Demo product E','',2999999,1,NULL)`
+    );
   }
-
-  // carts.id tipini öğren, child tabloları ona göre yarat
-  const idInfo = await getCartsIdInfo();
-
-  // Eğer information_schema carts.id görmüyorsa, yine de varsayılan varchar(64) ile devam et
-  const cartIdColType = idInfo.exists ? idInfo.columnType : "varchar(64)";
 
   await query(`
     CREATE TABLE IF NOT EXISTS cart_emails (
-      cart_id ${cartIdColType} PRIMARY KEY,
-      email   VARCHAR(255) NOT NULL,
-      CONSTRAINT fk_cart_emails_cart
-        FOREIGN KEY (cart_id) REFERENCES carts (id)
-        ON DELETE CASCADE ON UPDATE CASCADE
+      cart_id VARCHAR(64) PRIMARY KEY,
+      email   VARCHAR(255) NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
   await query(`
     CREATE TABLE IF NOT EXISTS cart_items (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      cart_id ${cartIdColType} NOT NULL,
+      cart_id VARCHAR(64) NOT NULL,
       product_id INT NOT NULL,
       quantity INT NOT NULL DEFAULT 1,
       unit_price_cents INT NOT NULL DEFAULT 0,
       UNIQUE KEY uniq_item (cart_id, product_id),
-      INDEX idx_cart (cart_id),
-      CONSTRAINT fk_cart_items_cart
-        FOREIGN KEY (cart_id) REFERENCES carts (id)
-        ON DELETE CASCADE ON UPDATE CASCADE
+      INDEX idx_cart (cart_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
@@ -134,7 +100,7 @@ async function ensureSchema() {
 }
 
 /* product SELECT cache */
-type PSel = { allSql: string; bySlugSql: string; cartJoinSql: string };
+type PSel = { allSql: string; bySlugSql: string; cartJoin: (cid: string) => string };
 let selCache: PSel | null = null;
 
 async function buildProductSelect(): Promise<PSel> {
@@ -149,9 +115,9 @@ async function buildProductSelect(): Promise<PSel> {
   const centsCol = pick(cols, /(cent|cents|kurus)$/i) || pick(cols, /^price_cents$/i) || pick(cols, /^priceCents$/i);
   const tlCol = pick(cols.filter((c) => !/(cent|cents|kurus)/i.test(c)), /(price|fiyat|amount|tl)/i);
 
-  const imgExpr = imgCol ? `\`${imgCol}\`` : `''`;
+  const imgExpr  = imgCol ? `\`${imgCol}\`` : `''`;
   const descExpr = descCol ? `\`${descCol}\`` : `''`;
-  const actExpr = activeCol ? `\`${activeCol}\`` : `1`;
+  const actExpr  = activeCol ? `\`${activeCol}\`` : `1`;
   const codeExpr = codeCol ? `\`${codeCol}\`` : `NULL`;
   const priceExpr = centsCol ? `\`${centsCol}\`` : (tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`);
 
@@ -167,75 +133,26 @@ async function buildProductSelect(): Promise<PSel> {
 
   const allSql = `SELECT ${base} FROM products${whereActive} ORDER BY id ASC`;
   const bySlugSql = `SELECT ${base} FROM products WHERE slug = ? LIMIT 1`;
+  const cartJoin = (cartId: string) => {
+    const imgJoin = imgCol ? `p.\`${imgCol}\`` : `''`;
+    return `
+      SELECT ci.product_id, p.slug, p.name, ${imgJoin} AS image_url,
+             ci.quantity, ci.unit_price_cents
+        FROM cart_items ci
+        JOIN products p ON p.id = ci.product_id
+       WHERE ci.cart_id = '${String(cartId).replace(/'/g, "''")}'
+       ORDER BY ci.id ASC
+    `;
+  };
 
-  const imgJoin = imgCol ? `p.\`${imgCol}\`` : `''`;
-  const cartJoinSql = `
-    SELECT ci.product_id, p.slug, p.name, ${imgJoin} AS image_url,
-           ci.quantity, ci.unit_price_cents
-      FROM cart_items ci
-      JOIN products p ON p.id = ci.product_id
-     WHERE ci.cart_id = ?
-     ORDER BY ci.id ASC
-  `;
-
-  selCache = { allSql, bySlugSql, cartJoinSql };
+  selCache = { allSql, bySlugSql, cartJoin };
   return selCache;
-}
-
-/* carts: DB'ye göre id üret */
-async function cartExists(cartId: string): Promise<boolean> {
-  const rows = (await query(`SELECT id FROM carts WHERE id = ? LIMIT 1`, [cartId])) as unknown as Array<{ id?: unknown }>;
-  return !!rows?.[0]?.id;
-}
-
-async function createCart(): Promise<string> {
-  await ensureSchema();
-  const idInfo = await getCartsIdInfo();
-
-  // Eğer auto_increment ise dene
-  if (idInfo.exists && idInfo.isAutoInc) {
-    const ins = (await query(`INSERT INTO carts () VALUES ()`)) as unknown as { insertId?: number };
-    const insertId = Number(ins?.insertId ?? 0);
-    if (insertId > 0) return String(insertId);
-    // auto_inc var sanıp insertId alamazsak fallback aşağıya düşsün
-  }
-
-  // Auto increment değilse: tipine göre id üret
-  if (!idInfo.exists || isStringType(idInfo.dataType)) {
-    const id = newId();
-    await query(`INSERT INTO carts (id) VALUES (?)`, [id]);
-    return id;
-  }
-
-  if (isNumericType(idInfo.dataType)) {
-    const r = (await query(`SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM carts`)) as unknown as Array<{ nid?: unknown }>;
-    const nid = Number(r?.[0]?.nid ?? 0);
-    if (!Number.isFinite(nid) || nid <= 0) {
-      // son çare
-      const id = newId();
-      await query(`INSERT INTO carts (id) VALUES (?)`, [id]);
-      return id;
-    }
-    await query(`INSERT INTO carts (id) VALUES (?)`, [nid]);
-    return String(nid);
-  }
-
-  // bilinmeyen tip: string id ile dene
-  const id = newId();
-  await query(`INSERT INTO carts (id) VALUES (?)`, [id]);
-  return id;
 }
 
 /* cart helpers */
 export async function ensureCartId(cartId?: string | null) {
   await ensureSchema();
-
-  const cid = cartId ? String(cartId) : "";
-  if (cid) {
-    const ok = await cartExists(cid);
-    if (ok) return cid;
-  }
-  return await createCart();
+  return cartId || newId();
 }
 
 export async function setCartEmail(cartId: string, email: string) {
@@ -258,13 +175,6 @@ export async function getCartEmail(cartId: string): Promise<string | null> {
 export async function addCartItem(opts: { cartId: string; productId: number; quantity: number }) {
   await ensureSchema();
   const { cartId, productId, quantity } = opts;
-
-  // ✅ FK güvenliği: cart gerçekten var mı?
-  const ok = await cartExists(String(cartId));
-  if (!ok) {
-    // cookie stale ise route tekrar ensureCartId çağırıp cookie’yi düzeltmeli
-    throw new Error("STALE_CART_ID");
-  }
 
   const pcols = await listColumns("products");
   const centsCol = pick(pcols, /(cent|cents|kurus)$/i) || pick(pcols, /^price_cents$/i) || pick(pcols, /^priceCents$/i);
@@ -307,7 +217,7 @@ export async function removeItem(cartId: string, productId: number) {
 export async function getCartItems(cartId: string) {
   await ensureSchema();
   const sel = await buildProductSelect();
-  const rows = (await query(sel.cartJoinSql, [cartId])) as unknown as Row[];
+  const rows = (await query(sel.cartJoin(cartId))) as unknown as Row[];
   return rows.map((r) => ({
     product_id: Number(r.product_id),
     slug: String(r.slug),
@@ -326,6 +236,7 @@ export async function clearCart(cartId: string) {
 
 /* products */
 export async function getAllProducts(): Promise<Product[]> {
+  await ensureSchema();
   const sel = await buildProductSelect();
   const rows = (await query(sel.allSql)) as unknown as Row[];
   return rows.map((r) => ({
@@ -341,6 +252,7 @@ export async function getAllProducts(): Promise<Product[]> {
 }
 
 export async function getProductBySlug(slug: string): Promise<Product | null> {
+  await ensureSchema();
   const sel = await buildProductSelect();
   const rows = (await query(sel.bySlugSql, [slug])) as unknown as Row[];
   const r = rows?.[0];
@@ -395,15 +307,15 @@ export async function recordOrder(email: string, items: ApiCartItem[], totalCent
 
   if (cols.includes("orderNumber")) { insertCols.push("orderNumber"); placeholders.push("?"); values.push(`TS-${Date.now()}-${Math.floor(Math.random()*1e6)}`); }
   if (cols.includes("currency"))    { insertCols.push("currency");    placeholders.push("?"); values.push("TRY"); }
-  if (cols.includes("subtotalCents"))      { insertCols.push("subtotalCents");      placeholders.push("?"); values.push(subtotal); }
-  if (cols.includes("discountTotalCents")) { insertCols.push("discountTotalCents"); placeholders.push("?"); values.push(discountTotal); }
-  if (cols.includes("grandTotalCents"))    { insertCols.push("grandTotalCents");    placeholders.push("?"); values.push(totalCents); }
+  if (cols.includes("subtotalCents"))        { insertCols.push("subtotalCents");        placeholders.push("?"); values.push(subtotal); }
+  if (cols.includes("discountTotalCents"))   { insertCols.push("discountTotalCents");   placeholders.push("?"); values.push(discountTotal); }
+  if (cols.includes("grandTotalCents"))      { insertCols.push("grandTotalCents");      placeholders.push("?"); values.push(totalCents); }
 
   const insUnknown = await query(
     `INSERT INTO orders (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`,
     values
   );
-  const ins = insUnknown as unknown as { insertId?: number };
+  const ins = (insUnknown as unknown) as { insertId?: number };
   const orderId = Number(ins?.insertId ?? 0);
   if (!orderId) throw new Error("ORDER_INSERT_FAILED");
 
