@@ -16,29 +16,45 @@ async function listColumns(table: string): Promise<string[]> {
   return (rows || []).map((r) => String(r.name));
 }
 function pick(cols: string[], re: RegExp) { return cols.find((c) => re.test(c)) || null; }
-function esc(v: string) { return `'${String(v).replace(/'/g, "''")}'`; }
 
 /* schema: yalnızca bizim tabloları garanti ediyoruz */
 let schemaOk = false;
+
 async function ensureSchema() {
   if (schemaOk) return;
 
+  // ✅ carts tablosu: FK için parent şart
   await query(`
-    CREATE TABLE IF NOT EXISTS cart_emails (
-      cart_id VARCHAR(64) PRIMARY KEY,
-      email   VARCHAR(255) NOT NULL
+    CREATE TABLE IF NOT EXISTS carts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  // cart_emails: carts'a bağlı
+  await query(`
+    CREATE TABLE IF NOT EXISTS cart_emails (
+      cart_id INT PRIMARY KEY,
+      email   VARCHAR(255) NOT NULL,
+      CONSTRAINT fk_cart_emails_cart
+        FOREIGN KEY (cart_id) REFERENCES carts (id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // cart_items: carts'a bağlı (FK). (DB'de zaten varsa CREATE IF NOT EXISTS dokunmaz.)
   await query(`
     CREATE TABLE IF NOT EXISTS cart_items (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      cart_id VARCHAR(64) NOT NULL,
+      cart_id INT NOT NULL,
       product_id INT NOT NULL,
       quantity INT NOT NULL DEFAULT 1,
       unit_price_cents INT NOT NULL DEFAULT 0,
       UNIQUE KEY uniq_item (cart_id, product_id),
-      INDEX idx_cart (cart_id)
+      INDEX idx_cart (cart_id),
+      CONSTRAINT fk_cart_items_cart
+        FOREIGN KEY (cart_id) REFERENCES carts (id)
+        ON DELETE CASCADE ON UPDATE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
@@ -71,7 +87,12 @@ async function ensureSchema() {
 }
 
 /* product SELECT cache */
-type PSel = { allSql: string; bySlugSql: string; cartJoin: (cid: string) => string };
+type PSel = {
+  allSql: string;
+  bySlugSql: string;
+  cartJoinSql: string;
+  cartJoinImgExpr: string; // p.`col` gibi
+};
 let selCache: PSel | null = null;
 
 async function buildProductSelect(): Promise<PSel> {
@@ -104,40 +125,75 @@ async function buildProductSelect(): Promise<PSel> {
 
   const allSql = `SELECT ${base} FROM products${whereActive} ORDER BY id ASC`;
   const bySlugSql = `SELECT ${base} FROM products WHERE slug = ? LIMIT 1`;
-  const cartJoin = (cartId: string) => {
-    const imgJoin = imgCol ? `p.\`${imgCol}\`` : `''`;
-    return `
-      SELECT ci.product_id, p.slug, p.name, ${imgJoin} AS image_url,
-             ci.quantity, ci.unit_price_cents
-        FROM cart_items ci
-        JOIN products p ON p.id = ci.product_id
-       WHERE ci.cart_id = ${esc(cartId)}
-       ORDER BY ci.id ASC
-    `;
-  };
-  selCache = { allSql, bySlugSql, cartJoin };
+
+  // ✅ cart join artık parametrik
+  const cartJoinImgExpr = imgCol ? `p.\`${imgCol}\`` : `''`;
+  const cartJoinSql = `
+    SELECT ci.product_id, p.slug, p.name, ${cartJoinImgExpr} AS image_url,
+           ci.quantity, ci.unit_price_cents
+      FROM cart_items ci
+      JOIN products p ON p.id = ci.product_id
+     WHERE ci.cart_id = ?
+     ORDER BY ci.id ASC
+  `;
+
+  selCache = { allSql, bySlugSql, cartJoinSql, cartJoinImgExpr };
   return selCache;
+}
+
+/* carts */
+async function cartExists(cartId: number): Promise<boolean> {
+  const rows = (await query(`SELECT id FROM carts WHERE id = ? LIMIT 1`, [cartId])) as unknown as Array<{ id?: number }>;
+  return !!rows?.[0]?.id;
+}
+
+async function createCart(): Promise<number> {
+  const ins = (await query(`INSERT INTO carts () VALUES ()`)) as unknown as { insertId?: number };
+  const id = Number((ins as any)?.insertId ?? 0);
+  if (!id) throw new Error("CART_CREATE_FAILED");
+  return id;
 }
 
 /* cart helpers */
 export async function ensureCartId(cartId?: string | null) {
   await ensureSchema();
-  return cartId || newId();
+
+  // cookie varsa numerik mi?
+  const cid = cartId ? Number(String(cartId)) : NaN;
+
+  if (Number.isFinite(cid) && cid > 0) {
+    const ok = await cartExists(cid);
+    if (ok) return String(cid);
+  }
+
+  // ✅ yoksa carts'a yeni satır aç
+  const newCartId = await createCart();
+  return String(newCartId);
 }
 
 export async function setCartEmail(cartId: string, email: string) {
   await ensureSchema();
   const e = normEmail(email);
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("INVALID_CART_ID");
+
   await query(
     `INSERT INTO cart_emails (cart_id, email)
      VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email)`,
-    [cartId, e]
+    [cid, e]
   );
 }
 
 export async function getCartEmail(cartId: string): Promise<string | null> {
   await ensureSchema();
-  const r = (await query(`SELECT email FROM cart_emails WHERE cart_id = ?`, [cartId])) as unknown as Array<{ email?: string }>;
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) return null;
+
+  const r = (await query(
+    `SELECT email FROM cart_emails WHERE cart_id = ?`,
+    [cid]
+  )) as unknown as Array<{ email?: string }>;
+
   const e = r?.[0]?.email;
   return e ? normEmail(e) : null;
 }
@@ -145,6 +201,18 @@ export async function getCartEmail(cartId: string): Promise<string | null> {
 export async function addCartItem(opts: { cartId: string; productId: number; quantity: number }) {
   await ensureSchema();
   const { cartId, productId, quantity } = opts;
+
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("INVALID_CART_ID");
+
+  // ✅ carts'ta gerçekten var mı? (cookie bozuksa FK patlamasın)
+  if (!(await cartExists(cid))) {
+    const fixedId = await createCart();
+    // bu fonksiyon sadece insert yapıyor; cookie güncellemesi route tarafında zaten var.
+    // burada sadece güvenli şekilde yeni cart'a eklemek için cid'yi değiştiriyoruz:
+    // NOT: route zaten ensureCartId ile bunu yakalayacak.
+    throw new Error(`STALE_CART_COOKIE:${fixedId}`);
+  }
 
   const pcols = await listColumns("products");
   const centsCol = pick(pcols, /(cent|cents|kurus)$/i) || pick(pcols, /^price_cents$/i) || pick(pcols, /^priceCents$/i);
@@ -155,6 +223,7 @@ export async function addCartItem(opts: { cartId: string; productId: number; qua
     `SELECT ${priceSel} AS unit_price_cents FROM products WHERE id = ?`,
     [productId]
   )) as unknown as Array<{ unit_price_cents?: number }>;
+
   const unit = Number(rows?.[0]?.unit_price_cents ?? 0);
 
   await query(
@@ -163,30 +232,41 @@ export async function addCartItem(opts: { cartId: string; productId: number; qua
      ON DUPLICATE KEY UPDATE 
        quantity = quantity + VALUES(quantity),
        unit_price_cents = VALUES(unit_price_cents)`,
-    [cartId, productId, quantity, unit]
+    [cid, productId, Number(quantity) || 1, unit]
   );
 }
 
 export async function setItemQuantity(opts: { cartId: string; productId: number; quantity: number }) {
   await ensureSchema();
   const { cartId, productId, quantity } = opts;
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("INVALID_CART_ID");
+
   if (quantity <= 0) {
-    await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
+    await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cid, productId]);
     return;
   }
-  await query(`UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`,
-    [quantity, cartId, productId]);
+  await query(
+    `UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`,
+    [quantity, cid, productId]
+  );
 }
 
 export async function removeItem(cartId: string, productId: number) {
   await ensureSchema();
-  await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("INVALID_CART_ID");
+  await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cid, productId]);
 }
 
 export async function getCartItems(cartId: string) {
   await ensureSchema();
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) return [] as RawCartRow[];
+
   const sel = await buildProductSelect();
-  const rows = (await query(sel.cartJoin(cartId))) as unknown as Row[];
+  const rows = (await query(sel.cartJoinSql, [cid])) as unknown as Row[];
+
   return rows.map((r) => ({
     product_id: Number(r.product_id),
     slug: String(r.slug),
@@ -200,7 +280,9 @@ export const getCartItemsRaw = getCartItems;
 
 export async function clearCart(cartId: string) {
   await ensureSchema();
-  await query(`DELETE FROM cart_items WHERE cart_id = ?`, [cartId]);
+  const cid = Number(cartId);
+  if (!Number.isFinite(cid) || cid <= 0) throw new Error("INVALID_CART_ID");
+  await query(`DELETE FROM cart_items WHERE cart_id = ?`, [cid]);
 }
 
 /* products */
@@ -218,6 +300,7 @@ export async function getAllProducts(): Promise<Product[]> {
     caboCode: (r.caboCode as string | null) ?? null,
   }));
 }
+
 export async function getProductBySlug(slug: string): Promise<Product | null> {
   const sel = await buildProductSelect();
   const rows = (await query(sel.bySlugSql, [slug])) as unknown as Row[];

@@ -2,13 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { readCartId, writeCartId, readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
 import {
-  addCartItem, ensureCartId, getCartItemsRaw, setItemQuantity, removeItem,
-  getProductBySlug, getCartEmail
+  addCartItem,
+  ensureCartId,
+  getCartItemsRaw,
+  setItemQuantity,
+  removeItem,
+  getProductBySlug,
+  getCartEmail
 } from "@/lib/queries";
 import { applyDiscountsToItems } from "@/lib/discounter";
 
 export async function GET() {
   const c = (await cookies()) as unknown as CookieStore;
+
   const cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
@@ -37,7 +43,9 @@ export async function POST(req: NextRequest) {
   const { productId, slug, quantity = 1 } = body;
 
   const c = (await cookies()) as unknown as CookieStore;
-  const cartId = await ensureCartId(readCartId(c));
+
+  // ✅ carts(parent) yoksa oluşturup valid numeric id döndürür
+  let cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
   let pid = productId;
@@ -48,7 +56,20 @@ export async function POST(req: NextRequest) {
   }
   if (!pid) return NextResponse.json({ error: "productId or slug required" }, { status: 400 });
 
-  await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
+  try {
+    await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
+  } catch (e: any) {
+    // ✅ Eğer cookie çok eskiyse ve addCartItem "STALE_CART_COOKIE:xxx" diye fail ettiyse toparla
+    const msg = String(e?.message || "");
+    if (msg.startsWith("STALE_CART_COOKIE:")) {
+      cartId = msg.split(":")[1] || (await ensureCartId(null));
+      writeCartId(c, cartId);
+      await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
+    } else {
+      throw e;
+    }
+  }
+
   return GET();
 }
 
@@ -59,6 +80,7 @@ export async function PATCH(req: NextRequest) {
 
   const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
+  writeCartId(c, cartId);
 
   await setItemQuantity({ cartId, productId: Number(productId), quantity: Number(quantity) || 0 });
   return GET();
@@ -71,6 +93,7 @@ export async function DELETE(req: NextRequest) {
 
   const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
+  writeCartId(c, cartId);
 
   await removeItem(cartId, productId);
   return GET();
