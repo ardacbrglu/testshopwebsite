@@ -14,7 +14,6 @@ import { applyDiscountsToItems } from "@/lib/discounter";
 
 export async function GET() {
   const c = (await cookies()) as unknown as CookieStore;
-
   const cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
@@ -44,7 +43,6 @@ export async function POST(req: NextRequest) {
 
   const c = (await cookies()) as unknown as CookieStore;
 
-  // ✅ carts(parent) yoksa oluşturup valid numeric id döndürür
   let cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
@@ -58,15 +56,16 @@ export async function POST(req: NextRequest) {
 
   try {
     await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
-  } catch (e: any) {
-    // ✅ Eğer cookie çok eskiyse ve addCartItem "STALE_CART_COOKIE:xxx" diye fail ettiyse toparla
-    const msg = String(e?.message || "");
-    if (msg.startsWith("STALE_CART_COOKIE:")) {
-      cartId = msg.split(":")[1] || (await ensureCartId(null));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+
+    // cookie’de cartId vardı ama DB’de carts satırı yoksa
+    if (msg === "STALE_CART_ID") {
+      cartId = await ensureCartId(null);
       writeCartId(c, cartId);
       await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
     } else {
-      throw e;
+      throw err;
     }
   }
 
