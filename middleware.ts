@@ -1,52 +1,119 @@
-// middleware.ts
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const REF_COOKIE = "cabo_attrib";
-const TOKEN_KEYS = ["cabo", "token", "cabo_token", "cabotoken", "t", "ref", "r"];
-const LID_KEYS = ["lid", "linkid", "link_id", "linkId", "l"];
 
-export function middleware(req: NextRequest) {
-  if (req.method !== "GET") return NextResponse.next();
+function stripParams(url: URL) {
+  // token/lid/slug gibi attribution paramlarını temizle
+  url.searchParams.delete("token");
+  url.searchParams.delete("lid");
+  url.searchParams.delete("slug");
+  url.searchParams.delete("caboRef");
+  url.searchParams.delete("caboToken");
+  url.searchParams.delete("caboLid");
+  return url;
+}
 
-  const url = req.nextUrl;
-  const sp = url.searchParams;
+function jsonCookieValue(input: unknown) {
+  return JSON.stringify(input);
+}
 
-  let token: string | undefined;
-  for (const k of TOKEN_KEYS) {
-    const v = sp.get(k);
-    if (v) {
-      token = v;
-      break;
+async function verifyWithCabo(args: {
+  token: string;
+  lid?: string | null;
+  slug?: string | null;
+}): Promise<boolean> {
+  const verifyUrl = (process.env.CABO_VERIFY_URL || "").trim();
+  if (!verifyUrl) return false; // verify zorunlu
+
+  const u = new URL(verifyUrl);
+  u.searchParams.set("token", args.token);
+  if (args.lid) u.searchParams.set("lid", String(args.lid));
+  if (args.slug) u.searchParams.set("slug", String(args.slug));
+
+  try {
+    const r = await fetch(u.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+
+    if (!r.ok) return false;
+
+    // Bazı verify endpoint’ler JSON döner: { ok:true, valid:true }
+    // Bazıları sadece 200 döner. İkisini de destekleyelim.
+    let j: any = null;
+    try {
+      j = await r.json();
+    } catch {
+      j = null;
     }
+    if (!j) return true;
+    if (j.ok === true && (j.valid === true || j.verified === true || j.allowed === true)) return true;
+    if (j.ok === true && j.valid == null) return true; // ok:true ama valid yoksa da kabul
+    return j.valid === true;
+  } catch {
+    return false;
+  }
+}
+
+async function pingCaboClick(token: string, lid?: string | null) {
+  // Cabo click log sadece /api/ref/[token] ile oluyor.
+  // Biz bunu background ping gibi yapacağız; redirect’i manual yapıp sayfa navigasyonunu bozmayacağız.
+  const base = (process.env.CABO_CLICK_BASE_URL || "").trim();
+  if (!base) return;
+
+  try {
+    const u = new URL(base.replace(/\/+$/, "") + `/api/ref/${encodeURIComponent(token)}`);
+    if (lid) u.searchParams.set("lid", String(lid));
+
+    // redirect: "manual" => 302’yi takip etmez, ama Cabo endpoint request’i aldığı için click yazılabilir.
+    await fetch(u.toString(), {
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      headers: { "User-Agent": "testshop-attrib-ping" },
+    }).catch(() => {});
+  } catch {
+    // ignore
+  }
+}
+
+export async function middleware(req: NextRequest) {
+  const url = new URL(req.url);
+
+  // sadece token paramı varsa attribution akışı çalışsın
+  const token = url.searchParams.get("token") || url.searchParams.get("caboRef") || url.searchParams.get("caboToken");
+  const lid = url.searchParams.get("lid") || url.searchParams.get("caboLid");
+  const slug = url.searchParams.get("slug");
+
+  if (!token) return NextResponse.next();
+
+  const ok = await verifyWithCabo({ token, lid, slug });
+
+  const cleanUrl = stripParams(new URL(req.url));
+
+  // URL’yi temizleyip redirect edeceğiz, aynı anda cookie set/clear yapacağız.
+  const res = NextResponse.redirect(cleanUrl.toString(), 302);
+
+  if (!ok) {
+    // invalid => cookie sil
+    res.cookies.set(REF_COOKIE, "", { path: "/", maxAge: 0 });
+    return res;
   }
 
-  let lid: string | undefined;
-  for (const k of LID_KEYS) {
-    const v = sp.get(k);
-    if (v) {
-      lid = v;
-      break;
-    }
-  }
+  // valid => cookie set (verified flag + ts)
+  const ttlDays = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
+  const maxAge = Math.max(1, Math.round(ttlDays * 24 * 60 * 60));
 
-  if (!token && !lid) return NextResponse.next();
+  const payload = {
+    token,
+    lid: lid ?? null,
+    slug: slug ?? null,
+    ts: Math.floor(Date.now() / 1000),
+    v: 1, // ✅ verified flag
+  };
 
-  // temiz URL'e redirect
-  const clean = new URL(url);
-  [...TOKEN_KEYS, ...LID_KEYS].forEach((k) => clean.searchParams.delete(k));
-  const res = NextResponse.redirect(clean);
-
-  // landing slug (son path parçası)
-  const lastSeg = url.pathname.split("/").filter(Boolean).pop() || null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const days = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
-  const maxAge = Math.max(1, Math.round(days * 86400));
-
-  // ✅ ÖNEMLİ: encodeURIComponent YOK! Next zaten cookie value'yu güvenli şekilde encode eder.
-  const value = JSON.stringify({ token, lid, slug: lastSeg, ts: nowSec });
-
-  res.cookies.set(REF_COOKIE, value, {
+  res.cookies.set(REF_COOKIE, jsonCookieValue(payload), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -54,9 +121,13 @@ export function middleware(req: NextRequest) {
     maxAge,
   });
 
+  // click ping (await edelim; kısa)
+  await pingCaboClick(token, lid);
+
   return res;
 }
 
+// token paramı olan tüm sayfalarda çalışsın
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

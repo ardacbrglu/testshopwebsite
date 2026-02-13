@@ -1,6 +1,6 @@
 // src/lib/cookies.ts
 export const CART_COOKIE = "cartId";
-export const REF_COOKIE = "cabo_attrib"; // JSON: {token?, lid?, slug?, ts}
+export const REF_COOKIE = "cabo_attrib"; // JSON: {token?, lid?, slug?, ts, v:1}
 
 export type SameSite = "lax" | "strict" | "none";
 export type CookieValue = { name: string; value: string };
@@ -24,6 +24,7 @@ export type ReferralAttrib = {
   lid?: string | number | null;
   slug?: string | null;
   ts?: number | null;
+  v?: number | null; // ✅ verified flag
 };
 
 export function readCartId(c: CookieStore): string | null {
@@ -44,7 +45,6 @@ export function writeCartId(c: CookieStore, id: string) {
 type UnknownRecord = Record<string, unknown>;
 
 function safeDecodeMaybeTwice(input: string): string {
-  // %257B... gibi double-encode olmuş değerleri tolere et
   let s = input;
   for (let i = 0; i < 2; i++) {
     try {
@@ -69,7 +69,7 @@ export function readReferralCookie(c: CookieStore): ReferralAttrib | null {
     if (!parsed || typeof parsed !== "object") return null;
     const obj = parsed as UnknownRecord;
 
-    // ts yoksa geçersiz say
+    // ts yoksa geçersiz
     if (!("ts" in obj)) return null;
 
     return {
@@ -82,45 +82,30 @@ export function readReferralCookie(c: CookieStore): ReferralAttrib | null {
           : String(obj.lid),
       slug: typeof obj.slug === "string" ? obj.slug : obj.slug == null ? null : String(obj.slug),
       ts: Number(obj.ts) || 0,
+      v: Number((obj as any).v ?? 0) || 0,
     };
   } catch {
     return null;
   }
 }
 
-export function writeReferralCookie(
-  c: CookieStore,
-  data: { token?: string; lid?: string | number; slug?: string; ts?: number }
-) {
-  const days = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
-  const maxAge = Math.max(1, Math.round(days * 24 * 60 * 60));
-
-  // ✅ encodeURIComponent YOK! Next cookie mekanizması encode ediyor.
-  const value = JSON.stringify({
-    ...data,
-    ts: data.ts ?? Math.floor(Date.now() / 1000),
-  });
-
-  c.set(REF_COOKIE, value, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge,
-  });
-}
-
 export function clearReferralCookie(c: CookieStore) {
   c.set(REF_COOKIE, "", { path: "/", maxAge: 0 });
 }
 
-/** TTL kontrolü (saniye) */
-export function isReferralValid(attrib?: { ts?: number | null } | null): boolean {
+/** TTL kontrolü (saniye) + ✅ verified flag */
+export function isReferralValid(attrib?: { ts?: number | null; v?: number | null } | null): boolean {
   if (!attrib) return false;
+
+  // ✅ sadece verified cookie kabul
+  const v = Number((attrib as any).v || 0);
+  if (v !== 1) return false;
+
   const now = Math.floor(Date.now() / 1000);
   const ts = Number(attrib.ts || 0);
   if (ts <= 0) return false;
   if (now < ts) return false;
+
   const ttl = Number(process.env.CABO_ATTRIB_TTL_SEC || 3600);
   return now - ts <= ttl;
 }
