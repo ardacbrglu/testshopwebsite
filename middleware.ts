@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 const REF_COOKIE = "cabo_attrib";
 const TOKEN_KEYS = ["cabo", "token", "cabo_token", "cabotoken", "t", "ref", "r"];
-const LID_KEYS   = ["lid", "linkid", "link_id", "linkId", "l"];
+const LID_KEYS = ["lid", "linkid", "link_id", "linkId", "l"];
 
 export function middleware(req: NextRequest) {
   if (req.method !== "GET") return NextResponse.next();
@@ -12,9 +12,22 @@ export function middleware(req: NextRequest) {
   const sp = url.searchParams;
 
   let token: string | undefined;
-  for (const k of TOKEN_KEYS) { const v = sp.get(k); if (v) { token = v; break; } }
+  for (const k of TOKEN_KEYS) {
+    const v = sp.get(k);
+    if (v) {
+      token = v;
+      break;
+    }
+  }
+
   let lid: string | undefined;
-  for (const k of LID_KEYS) { const v = sp.get(k); if (v) { lid = v; break; } }
+  for (const k of LID_KEYS) {
+    const v = sp.get(k);
+    if (v) {
+      lid = v;
+      break;
+    }
+  }
 
   if (!token && !lid) return NextResponse.next();
 
@@ -24,12 +37,16 @@ export function middleware(req: NextRequest) {
   const res = NextResponse.redirect(clean);
 
   // landing slug (son path parçası)
-  const lastSeg = url.pathname.split("/").filter(Boolean).pop();
+  const lastSeg = url.pathname.split("/").filter(Boolean).pop() || null;
+
   const nowSec = Math.floor(Date.now() / 1000);
   const days = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
   const maxAge = Math.max(1, Math.round(days * 86400));
 
-  const value = encodeURIComponent(JSON.stringify({ token, lid, slug: lastSeg, ts: nowSec }));
+  // ❗️ÖNEMLİ: encodeURIComponent YOK. Next cookie API zaten encode eder.
+  const valueObj = { token, lid, slug: lastSeg, ts: nowSec };
+  const value = JSON.stringify(valueObj);
+
   res.cookies.set(REF_COOKIE, value, {
     httpOnly: true,
     sameSite: "lax",
