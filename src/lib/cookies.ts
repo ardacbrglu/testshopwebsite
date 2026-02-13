@@ -1,9 +1,9 @@
+// src/lib/cookies.ts
 export const CART_COOKIE = "cartId";
 export const REF_COOKIE = "cabo_attrib"; // JSON: {token?, lid?, slug?, ts}
 
 export type SameSite = "lax" | "strict" | "none";
 export type CookieValue = { name: string; value: string };
-
 export interface CookieStore {
   get(name: string): CookieValue | undefined;
   set(
@@ -41,64 +41,51 @@ export function writeCartId(c: CookieStore, id: string) {
   });
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
+type UnknownRecord = Record<string, unknown>;
+
+function safeDecodeMaybeTwice(input: string): string {
+  // %257B... gibi double-encode olmuş değerleri tolere et
+  let s = input;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const d = decodeURIComponent(s);
+      if (d === s) break;
+      s = d;
+    } catch {
+      break;
+    }
+  }
+  return s;
 }
 
-/**
- * Referral cookie reader
- * - Yeni doğru format: JSON string (cookie API zaten encode eder)
- * - Eski yanlış format: encodeURIComponent(JSON) -> double-encoded (%257B...)
- * Bu yüzden: raw, decode1, decode2 deniyoruz.
- */
 export function readReferralCookie(c: CookieStore): ReferralAttrib | null {
   const raw = c.get(REF_COOKIE)?.value;
   if (!raw) return null;
 
-  const candidates: string[] = [raw];
-
   try {
-    candidates.push(decodeURIComponent(raw));
-  } catch {}
+    const decoded = safeDecodeMaybeTwice(raw);
+    const parsed: unknown = JSON.parse(decoded);
 
-  try {
-    const last = candidates[candidates.length - 1];
-    candidates.push(decodeURIComponent(last));
-  } catch {}
+    if (!parsed || typeof parsed !== "object") return null;
+    const obj = parsed as UnknownRecord;
 
-  for (const s of candidates) {
-    try {
-      const parsed: unknown = JSON.parse(s);
-      if (!isRecord(parsed)) continue;
+    // ts yoksa geçersiz say
+    if (!("ts" in obj)) return null;
 
-      // ts zorunlu (yoksa attrib sayma)
-      const tsVal = parsed["ts"];
-      const ts = Number(tsVal);
-      if (!Number.isFinite(ts) || ts <= 0) continue;
-
-      const tokenRaw = parsed["token"];
-      const lidRaw = parsed["lid"];
-      const slugRaw = parsed["slug"];
-
-      const token = typeof tokenRaw === "string" ? tokenRaw : tokenRaw == null ? null : String(tokenRaw);
-      const slug = typeof slugRaw === "string" ? slugRaw : slugRaw == null ? null : String(slugRaw);
-
-      let lid: string | number | null = null;
-      if (typeof lidRaw === "number" && Number.isFinite(lidRaw)) lid = lidRaw;
-      else if (typeof lidRaw === "string" && lidRaw.trim() !== "") {
-        const n = Number(lidRaw);
-        lid = Number.isFinite(n) ? n : lidRaw;
-      } else if (lidRaw != null) {
-        lid = String(lidRaw);
-      }
-
-      return { token, lid, slug, ts };
-    } catch {
-      // continue
-    }
+    return {
+      token: typeof obj.token === "string" ? obj.token : obj.token == null ? null : String(obj.token),
+      lid:
+        typeof obj.lid === "number" || typeof obj.lid === "string"
+          ? obj.lid
+          : obj.lid == null
+          ? null
+          : String(obj.lid),
+      slug: typeof obj.slug === "string" ? obj.slug : obj.slug == null ? null : String(obj.slug),
+      ts: Number(obj.ts) || 0,
+    };
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 export function writeReferralCookie(
@@ -108,7 +95,7 @@ export function writeReferralCookie(
   const days = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
   const maxAge = Math.max(1, Math.round(days * 24 * 60 * 60));
 
-  // ❗ encodeURIComponent YOK (double-encode bugını önler)
+  // ✅ encodeURIComponent YOK! Next cookie mekanizması encode ediyor.
   const value = JSON.stringify({
     ...data,
     ts: data.ts ?? Math.floor(Date.now() / 1000),
@@ -130,13 +117,10 @@ export function clearReferralCookie(c: CookieStore) {
 /** TTL kontrolü (saniye) */
 export function isReferralValid(attrib?: { ts?: number | null } | null): boolean {
   if (!attrib) return false;
-
   const now = Math.floor(Date.now() / 1000);
   const ts = Number(attrib.ts || 0);
-
   if (ts <= 0) return false;
   if (now < ts) return false;
-
   const ttl = Number(process.env.CABO_ATTRIB_TTL_SEC || 3600);
   return now - ts <= ttl;
 }

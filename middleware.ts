@@ -1,3 +1,4 @@
+// middleware.ts
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
@@ -38,14 +39,12 @@ export function middleware(req: NextRequest) {
 
   // landing slug (son path parçası)
   const lastSeg = url.pathname.split("/").filter(Boolean).pop() || null;
-
   const nowSec = Math.floor(Date.now() / 1000);
   const days = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
   const maxAge = Math.max(1, Math.round(days * 86400));
 
-  // ❗️ÖNEMLİ: encodeURIComponent YOK. Next cookie API zaten encode eder.
-  const valueObj = { token, lid, slug: lastSeg, ts: nowSec };
-  const value = JSON.stringify(valueObj);
+  // ✅ ÖNEMLİ: encodeURIComponent YOK! Next zaten cookie value'yu güvenli şekilde encode eder.
+  const value = JSON.stringify({ token, lid, slug: lastSeg, ts: nowSec });
 
   res.cookies.set(REF_COOKIE, value, {
     httpOnly: true,
