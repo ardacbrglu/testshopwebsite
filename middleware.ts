@@ -7,29 +7,38 @@ function sameOrigin(u: URL) {
   return `${u.protocol}//${u.host}`;
 }
 
+function normalizeVerifyUrl(raw: string): string {
+  const s = (raw || "").trim();
+  if (!s) return "";
+  // kullanıcı root verirse /verify ekle
+  if (s.endsWith("/verify")) return s;
+  if (s.endsWith("/")) return s + "verify";
+  return s + "/verify";
+}
+
 export async function middleware(req: NextRequest) {
   const url = new URL(req.url);
   const pathname = url.pathname;
 
-  // Static / next internals
-  if (
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/favicon") ||
-    pathname.startsWith("/assets")
-  ) {
+  // Next internals
+  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon") || pathname.startsWith("/assets")) {
     return NextResponse.next();
   }
 
   const token = url.searchParams.get("token")?.trim() || "";
-  const lid = url.searchParams.get("lid")?.trim() || "";
+  const lid = (url.searchParams.get("lid") || url.searchParams.get("linkId") || "").trim();
   const slug = url.searchParams.get("slug")?.trim() || "";
 
-  const CABO_VERIFY_URL = (process.env.CABO_VERIFY_URL || "").trim();
+  const CABO_VERIFY_URL = normalizeVerifyUrl(process.env.CABO_VERIFY_URL || "");
   const TESTSHOP_ORIGIN = sameOrigin(url);
 
-  // 1) Ref geldiyse: Cabo verify yap, sadece OK ise cookie set et
-  if (token && lid && CABO_VERIFY_URL) {
+  // Ref geldiyse Cabo verify çağır (click write burada olacak)
+  if (token && (lid || process.env.CABO_ALLOW_TOKEN_ONLY === "1") && CABO_VERIFY_URL) {
     try {
+      const body: any = { token };
+      if (lid) body.lid = lid;
+      if (slug) body.slug = slug;
+
       const r = await fetch(CABO_VERIFY_URL, {
         method: "POST",
         headers: {
@@ -38,14 +47,12 @@ export async function middleware(req: NextRequest) {
           "x-testshop-ua": req.headers.get("user-agent") || "",
           "x-testshop-referer": req.headers.get("referer") || "",
         },
-        body: JSON.stringify({ token, lid, slug: slug || null }),
-        // middleware fetch default no-cache good enough
+        body: JSON.stringify(body),
       });
 
+      // Verify OK ise cookie set et
       if (r.ok) {
         const data = (await r.json().catch(() => null)) as any;
-
-        // Cabo "ok:true" döndüyse yaz
         if (data?.ok) {
           const res = NextResponse.next();
 
@@ -53,8 +60,8 @@ export async function middleware(req: NextRequest) {
           const payload = encodeURIComponent(
             JSON.stringify({
               token,
-              lid,
-              slug: data?.slug || slug || null,
+              lid: data?.linkId ?? (lid || null),
+              slug: data?.slug ?? slug ?? null,
               ts,
             })
           );
@@ -73,43 +80,11 @@ export async function middleware(req: NextRequest) {
         }
       }
 
-      // Verify başarısızsa attribution temizle (ref sahte/expired)
-      const bad = NextResponse.next();
-      bad.cookies.set(REF_COOKIE, "", {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: 0,
-      });
-      return bad;
+      // Verify başarısızsa cookie'ye dokunmuyoruz (debug için en temizi)
+      return NextResponse.next();
     } catch {
-      // Cabo ulaşılamadı: cookie set etme, dokunma
       return NextResponse.next();
     }
-  }
-
-  // 2) Ref yoksa: “direct visit” ise attribution temizle
-  // Senin beklentin: ref’siz /products gelince indirim görünmesin.
-  // Bunu sağlamak için /products, /cart, /checkout gibi flow sayfalarında cookie’yi sıfırlıyoruz.
-  const shouldClear =
-    pathname === "/products" ||
-    pathname.startsWith("/products/") ||
-    pathname === "/cart" ||
-    pathname.startsWith("/cart/") ||
-    pathname === "/checkout" ||
-    pathname.startsWith("/checkout/");
-
-  if (shouldClear) {
-    const res = NextResponse.next();
-    res.cookies.set(REF_COOKIE, "", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 0,
-    });
-    return res;
   }
 
   return NextResponse.next();

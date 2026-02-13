@@ -5,16 +5,41 @@ import { getAllProducts } from "@/lib/queries";
 import { formatTRY } from "@/lib/money";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { readReferralCookie, type CookieStore, isReferralValid } from "@/lib/cookies";
+import { readReferralCookie, type CookieStore, isReferralValid, type ReferralAttrib } from "@/lib/cookies";
 import { applyDiscountsToItems } from "@/lib/discounter";
 
 const PLACEHOLDER = "https://placehold.co/800x600?text=Product";
 
-export default async function ProductsPage() {
+function buildRenderReferral(searchParams?: Record<string, string | string[] | undefined>): ReferralAttrib | null {
+  const token = typeof searchParams?.token === "string" ? searchParams!.token.trim() : "";
+  const lid = typeof searchParams?.lid === "string" ? searchParams!.lid.trim() : "";
+  const linkId = typeof searchParams?.linkId === "string" ? searchParams!.linkId.trim() : "";
+  const slug = typeof searchParams?.slug === "string" ? searchParams!.slug.trim() : "";
+
+  const effectiveLid = lid || linkId;
+
+  // Cabo verify şu an lid istiyor; render-time indirim için de lid şart koyalım.
+  if (!token || token.length < 16) return null;
+  if (!effectiveLid) return null;
+
+  const ts = Math.floor(Date.now() / 1000);
+  return { token, lid: effectiveLid, slug: slug || null, ts };
+}
+
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const products = await getAllProducts();
 
+  const sp = (await searchParams) || {};
   const c = (await cookies()) as unknown as CookieStore;
-  const ref = readReferralCookie(c);
+
+  const refCookie = readReferralCookie(c);
+  const refFromUrl = buildRenderReferral(sp);
+
+  const ref = isReferralValid(refCookie) ? refCookie : refFromUrl;
   const enabled = isReferralValid(ref);
 
   return (
@@ -27,7 +52,7 @@ export default async function ProductsPage() {
           let pct = 0;
           let finalPrice = p.priceCents;
 
-          if (enabled) {
+          if (enabled && ref) {
             const one = applyDiscountsToItems(
               [
                 {

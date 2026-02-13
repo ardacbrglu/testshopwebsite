@@ -3,30 +3,52 @@ export const revalidate = 0;
 
 import { getProductBySlug } from "@/lib/queries";
 import { cookies } from "next/headers";
-import { readReferralCookie, type CookieStore, isReferralValid } from "@/lib/cookies";
+import { readReferralCookie, type CookieStore, isReferralValid, type ReferralAttrib } from "@/lib/cookies";
 import { applyDiscountsToItems } from "@/lib/discounter";
 import { formatTRY } from "@/lib/money";
 import AddToCartWidget from "@/components/AddToCartWidget";
 
 const PLACEHOLDER = "https://placehold.co/800x600?text=Product";
 
+function buildRenderReferral(searchParams?: Record<string, string | string[] | undefined>): ReferralAttrib | null {
+  const token = typeof searchParams?.token === "string" ? searchParams!.token.trim() : "";
+  const lid = typeof searchParams?.lid === "string" ? searchParams!.lid.trim() : "";
+  const linkId = typeof searchParams?.linkId === "string" ? searchParams!.linkId.trim() : "";
+  const slug = typeof searchParams?.slug === "string" ? searchParams!.slug.trim() : "";
+
+  const effectiveLid = lid || linkId;
+
+  if (!token || token.length < 16) return null;
+  if (!effectiveLid) return null;
+
+  const ts = Math.floor(Date.now() / 1000);
+  return { token, lid: effectiveLid, slug: slug || null, ts };
+}
+
 export default async function ProductPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { slug } = await params;
+  const sp = (await searchParams) || {};
+
   const product = await getProductBySlug(slug);
   if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 
   const c = (await cookies()) as unknown as CookieStore;
-  const ref = readReferralCookie(c);
+  const refCookie = readReferralCookie(c);
+  const refFromUrl = buildRenderReferral(sp);
+
+  const ref = isReferralValid(refCookie) ? refCookie : refFromUrl;
   const enabled = isReferralValid(ref);
 
   let pct = 0;
   let final = product.priceCents;
 
-  if (enabled) {
+  if (enabled && ref) {
     const one = applyDiscountsToItems(
       [
         {
