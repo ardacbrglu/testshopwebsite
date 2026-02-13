@@ -11,11 +11,12 @@ const nextConfig: NextConfig = {
   // Proje kökünü açıkça belirt; lockfile uyarısını susturur.
   outputFileTracingRoot: path.resolve(__dirname),
 
-  // ✅ Remote image domain'lerine izin ver (placehold.co + unsplash)
+  // ✅ Remote images (placehold.co, placeholder.co, unsplash) izin ver
   images: {
     remotePatterns: [
-      { protocol: "https", hostname: "placehold.co" },
-      { protocol: "https", hostname: "images.unsplash.com" },
+      { protocol: "https", hostname: "placehold.co", pathname: "/**" },
+      { protocol: "https", hostname: "placeholder.co", pathname: "/**" },
+      { protocol: "https", hostname: "images.unsplash.com", pathname: "/**" },
     ],
   },
 };
