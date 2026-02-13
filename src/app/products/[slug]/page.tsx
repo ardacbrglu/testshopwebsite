@@ -16,10 +16,10 @@ import AddToCartWidget from "@/components/AddToCartWidget";
 const PLACEHOLDER = "https://placehold.co/800x600?text=Product";
 
 function buildRenderReferral(searchParams?: Record<string, string | string[] | undefined>): ReferralAttrib | null {
-  const token = typeof searchParams?.token === "string" ? searchParams!.token.trim() : "";
-  const lid = typeof searchParams?.lid === "string" ? searchParams!.lid.trim() : "";
-  const linkId = typeof searchParams?.linkId === "string" ? searchParams!.linkId.trim() : "";
-  const slug = typeof searchParams?.slug === "string" ? searchParams!.slug.trim() : "";
+  const token = typeof searchParams?.token === "string" ? searchParams.token.trim() : "";
+  const lid = typeof searchParams?.lid === "string" ? searchParams.lid.trim() : "";
+  const linkId = typeof searchParams?.linkId === "string" ? searchParams.linkId.trim() : "";
+  const slug = typeof searchParams?.slug === "string" ? searchParams.slug.trim() : "";
 
   const effectiveLid = lid || linkId;
 
@@ -48,7 +48,7 @@ export default async function ProductPage({
   const product = await getProductBySlug(slug);
   if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 
-  const c = (await cookies()) as unknown as CookieStore;
+  const c = cookies() as unknown as CookieStore; // ✅ await YOK
   const refCookie = readReferralCookie(c);
   const refFromUrl = buildRenderReferral(sp);
 
@@ -100,11 +100,7 @@ export default async function ProductPage({
           )}
         </div>
 
-        <AddToCartWidget
-          slug={product.slug}
-          productId={product.id}
-          ref={refToClient(ref)}
-        />
+        <AddToCartWidget slug={product.slug} productId={product.id} ref={refToClient(ref)} />
       </div>
     </div>
   );
