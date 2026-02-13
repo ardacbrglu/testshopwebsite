@@ -33,9 +33,38 @@ export function getAttributionScope(): AttributionScope {
   return s === "landing" ? "landing" : "sitewide";
 }
 
+function normalizeEnvJson(raw: string): string {
+  let s = String(raw || "").trim();
+
+  // bazen Railway/CLI value'yu tırnak içine alabiliyor:
+  // '"{...}"' veya "'{...}'"
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+
+  // url-encoded gelirse
+  // %7B%22product-a%22...
+  try {
+    const dec = decodeURIComponent(s);
+    // decode değişiklik yaptıysa kullan
+    if (dec && dec !== s) s = dec;
+  } catch {}
+
+  return s;
+}
+
 export function loadMap(): CaboMap {
-  try { return JSON.parse(process.env.CABO_MAP_JSON || "{}"); }
-  catch { return {}; }
+  try {
+    const raw = normalizeEnvJson(process.env.CABO_MAP_JSON || "{}");
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as CaboMap;
+  } catch {
+    return {};
+  }
 }
 
 export function normalizePct(p?: string | number): number {
@@ -66,7 +95,7 @@ export function applyDiscountsToItems(
   rows: RawCartRow[],
   opts?: { enabled?: boolean; referral?: ReferralAttrib | null }
 ) {
-  const map   = loadMap();
+  const map = loadMap();
   const scope = getAttributionScope();
   const enabled = !!opts?.enabled && isReferralValid(opts?.referral);
 
@@ -95,7 +124,7 @@ export function applyDiscountsToItems(
   });
 
   const subtotal = items.reduce((s, it) => s + it.unitPriceCents * it.quantity, 0);
-  const total    = items.reduce((s, it) => s + it.finalUnitPriceCents * it.quantity, 0);
+  const total = items.reduce((s, it) => s + it.finalUnitPriceCents * it.quantity, 0);
   const discount = Math.max(0, subtotal - total);
 
   return { items, subtotal, total, discount };

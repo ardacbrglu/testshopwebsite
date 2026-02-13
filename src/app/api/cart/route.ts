@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { readCartId, writeCartId, readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
+import {
+  readCartId,
+  writeCartId,
+  readReferralCookie,
+  isReferralValid,
+  type CookieStore,
+} from "@/lib/cookies";
 import {
   addCartItem,
   ensureCartId,
@@ -8,17 +14,16 @@ import {
   setItemQuantity,
   removeItem,
   getProductBySlug,
-  getCartEmail
+  getCartEmail,
 } from "@/lib/queries";
 import { applyDiscountsToItems } from "@/lib/discounter";
 
-export async function GET() {
-  const c = (await cookies()) as unknown as CookieStore;
-  const cartId = await ensureCartId(readCartId(c));
+async function buildCartResponse(c: CookieStore, cartId: string) {
   writeCartId(c, cartId);
 
   const ref = readReferralCookie(c);
   const raw = await getCartItemsRaw(cartId);
+
   const { items, subtotal, total, discount } = applyDiscountsToItems(raw, {
     enabled: isReferralValid(ref),
     referral: ref,
@@ -33,67 +38,73 @@ export async function GET() {
     subtotalCents: subtotal,
     discountCents: discount,
     totalCents: total,
-    referral: ref || null
+    referral: ref || null,
   });
 }
 
-export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as { productId?: number; slug?: string; quantity?: number };
-  const { productId, slug, quantity = 1 } = body;
-
+export async function GET() {
   const c = (await cookies()) as unknown as CookieStore;
-
-  let cartId = await ensureCartId(readCartId(c));
-  writeCartId(c, cartId);
-
-  let pid = productId;
-  if (!pid && slug) {
-    const pr = await getProductBySlug(String(slug));
-    if (!pr) return NextResponse.json({ error: "Product not found" }, { status: 404 });
-    pid = pr.id;
-  }
-  if (!pid) return NextResponse.json({ error: "productId or slug required" }, { status: 400 });
-
-  try {
-    await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-
-    // cookie’de cartId vardı ama DB’de carts satırı yoksa
-    if (msg === "STALE_CART_ID") {
-      cartId = await ensureCartId(null);
-      writeCartId(c, cartId);
-      await addCartItem({ cartId, productId: Number(pid), quantity: Number(quantity) || 1 });
-    } else {
-      throw err;
-    }
-  }
-
-  return GET();
+  const cartId = await ensureCartId(readCartId(c));
+  return buildCartResponse(c, cartId);
 }
 
-export async function PATCH(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as { productId?: number; quantity?: number };
-  const { productId, quantity } = body || {};
-  if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
+export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => ({}))) as {
+    productId?: number;
+    slug?: string;
+    quantity?: number;
+  };
+  const { productId, slug, quantity = 1 } = body;
 
   const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
   writeCartId(c, cartId);
 
-  await setItemQuantity({ cartId, productId: Number(productId), quantity: Number(quantity) || 0 });
-  return GET();
+  let pid = productId;
+
+  if (!pid && slug) {
+    const pr = await getProductBySlug(String(slug));
+    if (!pr) return NextResponse.json({ error: "PRODUCT_NOT_FOUND" }, { status: 404 });
+    pid = pr.id;
+  }
+  if (!pid) return NextResponse.json({ error: "PRODUCT_ID_OR_SLUG_REQUIRED" }, { status: 400 });
+
+  await addCartItem({
+    cartId,
+    productId: Number(pid),
+    quantity: Math.max(1, Number(quantity) || 1),
+  });
+
+  return buildCartResponse(c, cartId);
+}
+
+export async function PATCH(req: NextRequest) {
+  const body = (await req.json().catch(() => ({}))) as { productId?: number; quantity?: number };
+  const productId = Number(body?.productId);
+  const quantity = Number(body?.quantity);
+
+  if (!productId) return NextResponse.json({ error: "PRODUCT_ID_REQUIRED" }, { status: 400 });
+
+  const c = (await cookies()) as unknown as CookieStore;
+  const cartId = await ensureCartId(readCartId(c));
+
+  await setItemQuantity({
+    cartId,
+    productId,
+    quantity: Number.isFinite(quantity) ? quantity : 0,
+  });
+
+  return buildCartResponse(c, cartId);
 }
 
 export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const productId = Number(searchParams.get("productId"));
-  if (!productId) return NextResponse.json({ error: "productId required" }, { status: 400 });
+  if (!productId) return NextResponse.json({ error: "PRODUCT_ID_REQUIRED" }, { status: 400 });
 
   const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
-  writeCartId(c, cartId);
 
   await removeItem(cartId, productId);
-  return GET();
+  return buildCartResponse(c, cartId);
 }
