@@ -30,7 +30,7 @@ function buildRenderReferral(searchParams?: Record<string, string | string[] | u
   return { token, lid: effectiveLid, slug: slug || null, ts };
 }
 
-function refToClient(ref: ReferralAttrib | null | undefined) {
+function toClientCaboRef(ref: ReferralAttrib | null | undefined) {
   if (!ref?.token || !ref?.lid) return null;
   return { token: String(ref.token), lid: String(ref.lid) };
 }
@@ -48,7 +48,7 @@ export default async function ProductPage({
   const product = await getProductBySlug(slug);
   if (!product) return <div className="p-6">Ürün bulunamadı.</div>;
 
-  const c = cookies() as unknown as CookieStore; // ✅ await YOK
+  const c = cookies() as unknown as CookieStore;
   const refCookie = readReferralCookie(c);
   const refFromUrl = buildRenderReferral(sp);
 
@@ -100,7 +100,11 @@ export default async function ProductPage({
           )}
         </div>
 
-        <AddToCartWidget slug={product.slug} productId={product.id} ref={refToClient(ref)} />
+        <AddToCartWidget
+          slug={product.slug}
+          productId={product.id}
+          caboRef={toClientCaboRef(ref)}
+        />
       </div>
     </div>
   );
