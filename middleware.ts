@@ -1,133 +1,145 @@
+// src/middleware.ts
 import { NextRequest, NextResponse } from "next/server";
 
 const REF_COOKIE = "cabo_attrib";
 
-function stripParams(url: URL) {
-  // token/lid/slug gibi attribution paramlarını temizle
-  url.searchParams.delete("token");
-  url.searchParams.delete("lid");
-  url.searchParams.delete("slug");
-  url.searchParams.delete("caboRef");
-  url.searchParams.delete("caboToken");
-  url.searchParams.delete("caboLid");
-  return url;
+// Railway/Prod için: CABO_VERIFY_URL = "https://cabo-platform-production.up.railway.app/api/testshop_verify"
+function getVerifyUrl() {
+  const u = (process.env.CABO_VERIFY_URL || "").trim();
+  return u;
 }
 
-function jsonCookieValue(input: unknown) {
-  return JSON.stringify(input);
+function safeInt(x: string | null): number | null {
+  if (!x) return null;
+  const n = Number(x);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
 }
 
+function jsonCookieValue(data: { token: string; lid?: number | null; slug?: string | null }) {
+  return JSON.stringify({
+    token: data.token,
+    lid: data.lid ?? null,
+    slug: data.slug ?? null,
+    ts: Math.floor(Date.now() / 1000),
+  });
+}
+
+// Basit timeout
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit, ms: number) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// NOTE: Middleware Edge runtime’da çalışır.
+// HMAC signing’i burada yapmayacağız (Edge crypto farklılıkları vs).
+// Verify endpoint’i Cabo tarafında yine “origin allowlist + rate limit + dedup click” ile güvenli.
+// İstersen sonraki adımda Edge HMAC de ekleriz.
 async function verifyWithCabo(args: {
   token: string;
-  lid?: string | null;
-  slug?: string | null;
+  lid: number | null;
+  slug: string | null;
+  landingUrl: string;
+  userAgent: string;
+  referer: string;
+  ip: string;
 }): Promise<boolean> {
-  const verifyUrl = (process.env.CABO_VERIFY_URL || "").trim();
-  if (!verifyUrl) return false; // verify zorunlu
-
-  const u = new URL(verifyUrl);
-  u.searchParams.set("token", args.token);
-  if (args.lid) u.searchParams.set("lid", String(args.lid));
-  if (args.slug) u.searchParams.set("slug", String(args.slug));
+  const url = getVerifyUrl();
+  if (!url) return false;
 
   try {
-    const r = await fetch(u.toString(), {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
+    const r = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-TestShop-Origin": args.landingUrl,
+          "X-TestShop-IP": args.ip,
+          "X-TestShop-UA": args.userAgent,
+          "X-TestShop-Referer": args.referer,
+        },
+        body: JSON.stringify({
+          token: args.token,
+          lid: args.lid,
+          slug: args.slug,
+          landingUrl: args.landingUrl,
+        }),
+        cache: "no-store",
+      },
+      2500
+    );
 
     if (!r.ok) return false;
-
-    // Bazı verify endpoint’ler JSON döner: { ok:true, valid:true }
-    // Bazıları sadece 200 döner. İkisini de destekleyelim.
-    let j: any = null;
-    try {
-      j = await r.json();
-    } catch {
-      j = null;
-    }
-    if (!j) return true;
-    if (j.ok === true && (j.valid === true || j.verified === true || j.allowed === true)) return true;
-    if (j.ok === true && j.valid == null) return true; // ok:true ama valid yoksa da kabul
-    return j.valid === true;
+    const j = (await r.json().catch(() => null)) as { ok?: boolean } | null;
+    return !!j?.ok;
   } catch {
     return false;
   }
 }
 
-async function pingCaboClick(token: string, lid?: string | null) {
-  // Cabo click log sadece /api/ref/[token] ile oluyor.
-  // Biz bunu background ping gibi yapacağız; redirect’i manual yapıp sayfa navigasyonunu bozmayacağız.
-  const base = (process.env.CABO_CLICK_BASE_URL || "").trim();
-  if (!base) return;
-
-  try {
-    const u = new URL(base.replace(/\/+$/, "") + `/api/ref/${encodeURIComponent(token)}`);
-    if (lid) u.searchParams.set("lid", String(lid));
-
-    // redirect: "manual" => 302’yi takip etmez, ama Cabo endpoint request’i aldığı için click yazılabilir.
-    await fetch(u.toString(), {
-      method: "GET",
-      redirect: "manual",
-      cache: "no-store",
-      headers: { "User-Agent": "testshop-attrib-ping" },
-    }).catch(() => {});
-  } catch {
-    // ignore
-  }
-}
-
 export async function middleware(req: NextRequest) {
-  const url = new URL(req.url);
+  const url = req.nextUrl;
 
-  // sadece token paramı varsa attribution akışı çalışsın
-  const token = url.searchParams.get("token") || url.searchParams.get("caboRef") || url.searchParams.get("caboToken");
-  const lid = url.searchParams.get("lid") || url.searchParams.get("caboLid");
-  const slug = url.searchParams.get("slug");
+  const token = url.searchParams.get("token")?.trim() || "";
+  const lid = safeInt(url.searchParams.get("lid"));
+  const slugFromPath =
+    url.pathname.startsWith("/products/") ? decodeURIComponent(url.pathname.split("/")[2] || "") : null;
 
-  if (!token) return NextResponse.next();
-
-  const ok = await verifyWithCabo({ token, lid, slug });
-
-  const cleanUrl = stripParams(new URL(req.url));
-
-  // URL’yi temizleyip redirect edeceğiz, aynı anda cookie set/clear yapacağız.
-  const res = NextResponse.redirect(cleanUrl.toString(), 302);
-
-  if (!ok) {
-    // invalid => cookie sil
-    res.cookies.set(REF_COOKIE, "", { path: "/", maxAge: 0 });
+  // Ref param yoksa: hiçbir şey yapma (cookie’yi de silme).
+  // (Kullanıcı sonradan aynı session’da ref’siz dolaşsa bile attrib devam edebilir; bu “sitewide” için gerekli.)
+  if (!token) {
+    const res = NextResponse.next();
+    // middleware cache kır
+    res.headers.set("x-middleware-cache", "no-cache");
     return res;
   }
 
-  // valid => cookie set (verified flag + ts)
-  const ttlDays = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
-  const maxAge = Math.max(1, Math.round(ttlDays * 24 * 60 * 60));
+  // token var → Cabo verify
+  const ua = req.headers.get("user-agent") || "";
+  const referer = req.headers.get("referer") || "";
+  const ip =
+    (req.headers.get("x-forwarded-for") || "").split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown";
 
-  const payload = {
+  const landingUrl = url.origin + url.pathname; // query hariç
+
+  const ok = await verifyWithCabo({
     token,
-    lid: lid ?? null,
-    slug: slug ?? null,
-    ts: Math.floor(Date.now() / 1000),
-    v: 1, // ✅ verified flag
-  };
-
-  res.cookies.set(REF_COOKIE, jsonCookieValue(payload), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge,
+    lid,
+    slug: slugFromPath,
+    landingUrl,
+    userAgent: ua,
+    referer,
+    ip,
   });
 
-  // click ping (await edelim; kısa)
-  await pingCaboClick(token, lid);
+  const res = NextResponse.next();
+  res.headers.set("x-middleware-cache", "no-cache");
+
+  if (ok) {
+    res.cookies.set(REF_COOKIE, jsonCookieValue({ token, lid, slug: slugFromPath }), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: Number(process.env.CABO_COOKIE_TTL_DAYS || 14) * 24 * 60 * 60,
+    });
+  } else {
+    // token invalid → cookie temizle ki “refsiz” gibi davransın
+    res.cookies.set(REF_COOKIE, "", { path: "/", maxAge: 0 });
+  }
 
   return res;
 }
 
-// token paramı olan tüm sayfalarda çalışsın
+// Static dosyalar hariç her şeye çalışsın
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
