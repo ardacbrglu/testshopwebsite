@@ -6,6 +6,7 @@ import { useToast } from "./Toast";
 export default function AddToCartWidget(props: {
   slug: string;
   productId: number;
+  ref?: { token: string; lid: string } | null;
 }) {
   const { slug, productId } = props;
   const [qty, setQty] = useState<number>(1);

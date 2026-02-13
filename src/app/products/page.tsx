@@ -5,7 +5,12 @@ import { getAllProducts } from "@/lib/queries";
 import { formatTRY } from "@/lib/money";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { readReferralCookie, type CookieStore, isReferralValid, type ReferralAttrib } from "@/lib/cookies";
+import {
+  readReferralCookie,
+  type CookieStore,
+  isReferralValid,
+  type ReferralAttrib,
+} from "@/lib/cookies";
 import { applyDiscountsToItems } from "@/lib/discounter";
 
 const PLACEHOLDER = "https://placehold.co/800x600?text=Product";
@@ -18,12 +23,18 @@ function buildRenderReferral(searchParams?: Record<string, string | string[] | u
 
   const effectiveLid = lid || linkId;
 
-  // Cabo verify şu an lid istiyor; render-time indirim için de lid şart koyalım.
   if (!token || token.length < 16) return null;
   if (!effectiveLid) return null;
 
   const ts = Math.floor(Date.now() / 1000);
   return { token, lid: effectiveLid, slug: slug || null, ts };
+}
+
+function queryFromRef(ref: ReferralAttrib | null | undefined) {
+  if (!ref?.token || !ref?.lid) return "";
+  const t = encodeURIComponent(String(ref.token));
+  const l = encodeURIComponent(String(ref.lid));
+  return `?token=${t}&lid=${l}`;
 }
 
 export default async function ProductsPage({
@@ -39,8 +50,11 @@ export default async function ProductsPage({
   const refCookie = readReferralCookie(c);
   const refFromUrl = buildRenderReferral(sp);
 
+  // Öncelik: cookie geçerliyse onu kullan; değilse URL ref (ilk giriş)
   const ref = isReferralValid(refCookie) ? refCookie : refFromUrl;
   const enabled = isReferralValid(ref);
+
+  const q = queryFromRef(ref);
 
   return (
     <div className="max-w-6xl mx-auto p-6">
@@ -76,7 +90,7 @@ export default async function ProductsPage({
           return (
             <Link
               key={p.id}
-              href={`/products/${p.slug}`}
+              href={`/products/${p.slug}${q}`}
               className="card block overflow-hidden hover:border-neutral-600 transition"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}

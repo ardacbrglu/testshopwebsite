@@ -3,7 +3,12 @@ export const revalidate = 0;
 
 import { getProductBySlug } from "@/lib/queries";
 import { cookies } from "next/headers";
-import { readReferralCookie, type CookieStore, isReferralValid, type ReferralAttrib } from "@/lib/cookies";
+import {
+  readReferralCookie,
+  type CookieStore,
+  isReferralValid,
+  type ReferralAttrib,
+} from "@/lib/cookies";
 import { applyDiscountsToItems } from "@/lib/discounter";
 import { formatTRY } from "@/lib/money";
 import AddToCartWidget from "@/components/AddToCartWidget";
@@ -23,6 +28,11 @@ function buildRenderReferral(searchParams?: Record<string, string | string[] | u
 
   const ts = Math.floor(Date.now() / 1000);
   return { token, lid: effectiveLid, slug: slug || null, ts };
+}
+
+function refToClient(ref: ReferralAttrib | null | undefined) {
+  if (!ref?.token || !ref?.lid) return null;
+  return { token: String(ref.token), lid: String(ref.lid) };
 }
 
 export default async function ProductPage({
@@ -90,7 +100,11 @@ export default async function ProductPage({
           )}
         </div>
 
-        <AddToCartWidget slug={product.slug} productId={product.id} />
+        <AddToCartWidget
+          slug={product.slug}
+          productId={product.id}
+          ref={refToClient(ref)}
+        />
       </div>
     </div>
   );
