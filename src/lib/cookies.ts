@@ -25,7 +25,7 @@ export type ReferralAttrib = {
   token?: string | null;
   lid?: string | number | null;
   slug?: string | null;
-  ts?: number | null;
+  ts?: number | null; // seconds
 };
 
 export function readCartId(c: CookieStore): string | null {
@@ -80,7 +80,8 @@ export function readReferralCookie(c: CookieStore): ReferralAttrib | null {
         : obj.lid == null
         ? null
         : String(obj.lid);
-    const slug = typeof obj.slug === "string" ? obj.slug : obj.slug == null ? null : String(obj.slug);
+    const slug =
+      typeof obj.slug === "string" ? obj.slug : obj.slug == null ? null : String(obj.slug);
 
     const ts = Number(obj.ts);
     return {
@@ -94,8 +95,37 @@ export function readReferralCookie(c: CookieStore): ReferralAttrib | null {
   }
 }
 
+export function writeReferralCookie(c: CookieStore, attrib: ReferralAttrib) {
+  // ts seconds
+  const nowSec = Math.floor(Date.now() / 1000);
+  const payload = {
+    token: attrib.token ?? null,
+    lid: attrib.lid ?? null,
+    slug: attrib.slug ?? null,
+    ts: Number(attrib.ts ?? nowSec) || nowSec,
+  };
+
+  // TTL env ile aynı mantık
+  const ttl = Number(process.env.CABO_ATTRIB_TTL_SEC || 3600);
+
+  c.set(REF_COOKIE, encodeURIComponent(JSON.stringify(payload)), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: Math.max(60, ttl),
+  });
+}
+
 export function clearReferralCookie(c: CookieStore) {
-  c.set(REF_COOKIE, "", { path: "/", maxAge: 0 });
+  // production’da bazı ortamlarda clear için secure/samesite da tutarlı olmalı
+  c.set(REF_COOKIE, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+  });
 }
 
 export function isReferralValid(attrib?: { ts?: number | null } | null): boolean {
