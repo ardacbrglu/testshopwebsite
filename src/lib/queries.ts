@@ -1,7 +1,7 @@
+// src/lib/queries.ts
 import { query } from "./db";
 import { newId } from "./id";
-import type { Product, ApiOrder, ApiOrderItem } from "./types";
-import type { RawCartRow, ApiCartItem } from "./discounter";
+import type { Product, RawCartRow, ApiCartItem, ApiOrder, ApiOrderItem } from "./types";
 
 /* helpers */
 type Row = Record<string, unknown>;
@@ -15,15 +15,15 @@ async function listColumns(table: string): Promise<string[]> {
   )) as unknown as Array<{ name: string }>;
   return (rows || []).map((r) => String(r.name));
 }
-function pick(cols: string[], re: RegExp) { return cols.find((c) => re.test(c)) || null; }
+function pick(cols: string[], re: RegExp) {
+  return cols.find((c) => re.test(c)) || null;
+}
 
 /* schema: yalnızca bizim tabloları garanti ediyoruz */
 let schemaOk = false;
 async function ensureSchema() {
   if (schemaOk) return;
 
-  // ✅ PRODUCTS: Railway DB boşsa /products patlıyor. O yüzden products yoksa yarat + seed et.
-  // Not: Eğer products zaten varsa dokunmaz.
   await query(`
     CREATE TABLE IF NOT EXISTS products (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -37,7 +37,6 @@ async function ensureSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-  // ✅ SEED: boşsa demo ürünleri ekle (idempotent)
   const pcount = (await query(`SELECT COUNT(*) AS c FROM products`)) as unknown as Array<{ c?: number }>;
   const c = Number(pcount?.[0]?.c ?? 0);
   if (c === 0) {
@@ -100,26 +99,33 @@ async function ensureSchema() {
 }
 
 /* product SELECT cache */
-type PSel = { allSql: string; bySlugSql: string; cartJoin: (cid: string) => string };
+type PSel = { allSql: string; bySlugSql: string; cartJoinSql: string };
 let selCache: PSel | null = null;
 
 async function buildProductSelect(): Promise<PSel> {
   if (selCache) return selCache;
   const cols = await listColumns("products");
 
-  const imgCol = pick(cols, /^(image_url|imageUrl|img_url|imageURL)$/i) || pick(cols, /(image|img|photo|picture)/i);
+  const imgCol =
+    pick(cols, /^(image_url|imageUrl|img_url|imageURL)$/i) ||
+    pick(cols, /(image|img|photo|picture)/i);
+
   const descCol = pick(cols, /^(description|desc|details|aciklama)$/i) || null;
   const activeCol = pick(cols, /^(is_active|isActive|active)$/i) || null;
   const codeCol = pick(cols, /^(product_code|caboCode|code)$/i) || null;
 
-  const centsCol = pick(cols, /(cent|cents|kurus)$/i) || pick(cols, /^price_cents$/i) || pick(cols, /^priceCents$/i);
+  const centsCol =
+    pick(cols, /(cent|cents|kurus)$/i) ||
+    pick(cols, /^price_cents$/i) ||
+    pick(cols, /^priceCents$/i);
+
   const tlCol = pick(cols.filter((c) => !/(cent|cents|kurus)/i.test(c)), /(price|fiyat|amount|tl)/i);
 
-  const imgExpr  = imgCol ? `\`${imgCol}\`` : `''`;
+  const imgExpr = imgCol ? `\`${imgCol}\`` : `''`;
   const descExpr = descCol ? `\`${descCol}\`` : `''`;
-  const actExpr  = activeCol ? `\`${activeCol}\`` : `1`;
+  const actExpr = activeCol ? `\`${activeCol}\`` : `1`;
   const codeExpr = codeCol ? `\`${codeCol}\`` : `NULL`;
-  const priceExpr = centsCol ? `\`${centsCol}\`` : (tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`);
+  const priceExpr = centsCol ? `\`${centsCol}\`` : tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`;
 
   const base = `
     id, slug, name,
@@ -129,23 +135,28 @@ async function buildProductSelect(): Promise<PSel> {
     ${actExpr}   AS isActive,
     ${codeExpr}  AS caboCode
   `;
+
   const whereActive = activeCol ? ` WHERE \`${activeCol}\` = 1` : ``;
 
   const allSql = `SELECT ${base} FROM products${whereActive} ORDER BY id ASC`;
   const bySlugSql = `SELECT ${base} FROM products WHERE slug = ? LIMIT 1`;
-  const cartJoin = (cartId: string) => {
-    const imgJoin = imgCol ? `p.\`${imgCol}\`` : `''`;
-    return `
-      SELECT ci.product_id, p.slug, p.name, ${imgJoin} AS image_url,
-             ci.quantity, ci.unit_price_cents
-        FROM cart_items ci
-        JOIN products p ON p.id = ci.product_id
-       WHERE ci.cart_id = '${String(cartId).replace(/'/g, "''")}'
-       ORDER BY ci.id ASC
-    `;
-  };
 
-  selCache = { allSql, bySlugSql, cartJoin };
+  // ✅ CART JOIN: snake_case DB -> biz burada SELECT alias ile camelCase döndürüyoruz
+  const cartJoinSql = `
+    SELECT
+      ci.product_id AS productId,
+      p.slug        AS slug,
+      p.name        AS name,
+      ${imgCol ? `p.\`${imgCol}\`` : `''`} AS imageUrl,
+      ci.quantity   AS quantity,
+      ci.unit_price_cents AS unitPriceCents
+    FROM cart_items ci
+    JOIN products p ON p.id = ci.product_id
+    WHERE ci.cart_id = ?
+    ORDER BY ci.id ASC
+  `;
+
+  selCache = { allSql, bySlugSql, cartJoinSql };
   return selCache;
 }
 
@@ -177,9 +188,10 @@ export async function addCartItem(opts: { cartId: string; productId: number; qua
   const { cartId, productId, quantity } = opts;
 
   const pcols = await listColumns("products");
-  const centsCol = pick(pcols, /(cent|cents|kurus)$/i) || pick(pcols, /^price_cents$/i) || pick(pcols, /^priceCents$/i);
+  const centsCol =
+    pick(pcols, /(cent|cents|kurus)$/i) || pick(pcols, /^price_cents$/i) || pick(pcols, /^priceCents$/i);
   const tlCol = pick(pcols.filter((c) => !/(cent|cents|kurus)/i.test(c)), /(price|fiyat|amount|tl)/i);
-  const priceSel = centsCol ? `\`${centsCol}\`` : (tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`);
+  const priceSel = centsCol ? `\`${centsCol}\`` : tlCol ? `ROUND(\`${tlCol}\` * 100)` : `0`;
 
   const rows = (await query(
     `SELECT ${priceSel} AS unit_price_cents FROM products WHERE id = ?`,
@@ -191,10 +203,10 @@ export async function addCartItem(opts: { cartId: string; productId: number; qua
   await query(
     `INSERT INTO cart_items (cart_id, product_id, quantity, unit_price_cents)
      VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE 
+     ON DUPLICATE KEY UPDATE
        quantity = quantity + VALUES(quantity),
        unit_price_cents = VALUES(unit_price_cents)`,
-    [cartId, productId, Number(quantity) || 1, unit]
+    [cartId, productId, Math.max(1, Number(quantity) || 1), Math.max(0, unit)]
   );
 }
 
@@ -205,8 +217,10 @@ export async function setItemQuantity(opts: { cartId: string; productId: number;
     await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
     return;
   }
-  await query(`UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`,
-    [quantity, cartId, productId]);
+  await query(
+    `UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND product_id = ?`,
+    [quantity, cartId, productId]
+  );
 }
 
 export async function removeItem(cartId: string, productId: number) {
@@ -214,18 +228,28 @@ export async function removeItem(cartId: string, productId: number) {
   await query(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`, [cartId, productId]);
 }
 
-export async function getCartItems(cartId: string) {
+export async function getCartItems(cartId: string): Promise<RawCartRow[]> {
   await ensureSchema();
   const sel = await buildProductSelect();
-  const rows = (await query(sel.cartJoin(cartId))) as unknown as Row[];
-  return rows.map((r) => ({
-    product_id: Number(r.product_id),
+
+  const rows = (await query(sel.cartJoinSql, [cartId])) as unknown as Array<{
+    productId: number;
+    slug: string;
+    name: string;
+    imageUrl: string;
+    quantity: number;
+    unitPriceCents: number;
+  }>;
+
+  // ✅ camelCase output
+  return (rows || []).map((r) => ({
+    productId: Number(r.productId),
     slug: String(r.slug),
     name: String(r.name),
-    image_url: (r.image_url as string) || "",
+    imageUrl: String(r.imageUrl || ""),
     quantity: Number(r.quantity),
-    unit_price_cents: Number(r.unit_price_cents),
-  })) as RawCartRow[];
+    unitPriceCents: Number(r.unitPriceCents),
+  }));
 }
 export const getCartItemsRaw = getCartItems;
 
@@ -239,15 +263,16 @@ export async function getAllProducts(): Promise<Product[]> {
   await ensureSchema();
   const sel = await buildProductSelect();
   const rows = (await query(sel.allSql)) as unknown as Row[];
-  return rows.map((r) => ({
+
+  return (rows || []).map((r) => ({
     id: Number(r.id),
     slug: String(r.slug),
     name: String(r.name),
-    description: (r.description as string) || "",
-    imageUrl: (r.imageUrl as string) || "",
-    priceCents: Number(r.priceCents ?? (r as Row).pricecents ?? (r as Row).price_cents ?? 0),
-    isActive: (r.isActive as boolean | number | null) ?? null,
-    caboCode: (r.caboCode as string | null) ?? null,
+    description: String((r.description as string) || ""),
+    imageUrl: String((r.imageUrl as string) || ""),
+    priceCents: Number((r.priceCents as number) ?? 0),
+    isActive: (r.isActive as any) ?? null,
+    caboCode: (r.caboCode as any) ?? null,
   }));
 }
 
@@ -257,65 +282,29 @@ export async function getProductBySlug(slug: string): Promise<Product | null> {
   const rows = (await query(sel.bySlugSql, [slug])) as unknown as Row[];
   const r = rows?.[0];
   if (!r) return null;
+
   return {
     id: Number(r.id),
     slug: String(r.slug),
     name: String(r.name),
-    description: (r.description as string) || "",
-    imageUrl: (r.imageUrl as string) || "",
-    priceCents: Number(r.priceCents ?? (r as Row).pricecents ?? (r as Row).price_cents ?? 0),
-    isActive: (r.isActive as boolean | number | null) ?? null,
-    caboCode: (r.caboCode as string | null) ?? null,
+    description: String((r.description as string) || ""),
+    imageUrl: String((r.imageUrl as string) || ""),
+    priceCents: Number((r.priceCents as number) ?? 0),
+    isActive: (r.isActive as any) ?? null,
+    caboCode: (r.caboCode as any) ?? null,
   };
 }
 
 /* orders */
-async function pickOrderCols() {
-  const cols = await listColumns("orders");
-  const totalCol =
-    pick(cols, /^total_cents$/i) ||
-    pick(cols, /(amount_cents|grand_total_cents)$/i) ||
-    pick(cols, /^grandTotalCents$/) ||
-    pick(cols, /^subtotalCents$/) ||
-    pick(cols, /^total$/i) ||
-    pick(cols, /^amount$/i) ||
-    null;
-
-  const createdCol =
-    pick(cols, /^created_at$/i) ||
-    pick(cols, /^createdAt$/) ||
-    pick(cols, /^created$/i) ||
-    pick(cols, /(timestamp|ts)$/i) ||
-    null;
-
-  return { cols, totalCol, createdCol };
-}
-
 export async function recordOrder(email: string, items: ApiCartItem[], totalCents: number) {
   await ensureSchema();
   const e = normEmail(email);
 
-  const subtotal = items.reduce((s, it) => s + it.unitPriceCents * it.quantity, 0);
-  const discountTotal = Math.max(0, subtotal - totalCents);
-
-  const { cols, totalCol } = await pickOrderCols();
-  const insertCols: string[] = ["email"];
-  const values: unknown[] = [e];
-  const placeholders: string[] = ["?"];
-
-  if (totalCol) { insertCols.push(`\`${totalCol}\``); placeholders.push("?"); values.push(totalCents); }
-
-  if (cols.includes("orderNumber")) { insertCols.push("orderNumber"); placeholders.push("?"); values.push(`TS-${Date.now()}-${Math.floor(Math.random()*1e6)}`); }
-  if (cols.includes("currency"))    { insertCols.push("currency");    placeholders.push("?"); values.push("TRY"); }
-  if (cols.includes("subtotalCents"))        { insertCols.push("subtotalCents");        placeholders.push("?"); values.push(subtotal); }
-  if (cols.includes("discountTotalCents"))   { insertCols.push("discountTotalCents");   placeholders.push("?"); values.push(discountTotal); }
-  if (cols.includes("grandTotalCents"))      { insertCols.push("grandTotalCents");      placeholders.push("?"); values.push(totalCents); }
-
   const insUnknown = await query(
-    `INSERT INTO orders (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`,
-    values
+    `INSERT INTO orders (email, total_cents) VALUES (?, ?)`,
+    [e, Number(totalCents) || 0]
   );
-  const ins = (insUnknown as unknown) as { insertId?: number };
+  const ins = insUnknown as unknown as { insertId?: number };
   const orderId = Number(ins?.insertId ?? 0);
   if (!orderId) throw new Error("ORDER_INSERT_FAILED");
 
@@ -349,59 +338,62 @@ export async function recordOrder(email: string, items: ApiCartItem[], totalCent
 export async function getOrdersByEmail(email: string): Promise<ApiOrder[]> {
   await ensureSchema();
   const e = normEmail(email);
-  const { totalCol, createdCol } = await pickOrderCols();
-  const totalExpr = totalCol ? `\`${totalCol}\`` : `0`;
-  const createdExpr = createdCol ? `\`${createdCol}\`` : `NOW()`;
 
   const orders = (await query(
-    `SELECT id, ${totalExpr} AS total_cents, ${createdExpr} AS created_at
+    `SELECT id, total_cents AS totalCents, created_at AS createdAt
      FROM orders WHERE LOWER(email) = LOWER(?) ORDER BY id DESC LIMIT 20`,
     [e]
-  )) as unknown as Array<{ id: number; total_cents?: number; created_at: string }>;
+  )) as unknown as Array<{ id: number; totalCents?: number; createdAt: string }>;
 
   if (!orders.length) return [];
 
   const ids = orders.map((o) => Number(o.id));
   const inList = ids.map(() => "?").join(", ");
+
   const items = (await query(
-    `SELECT order_id, product_id, slug, name, image_url, quantity, unit_price_cents,
-            final_unit_price_cents, line_final_cents
-     FROM order_items WHERE order_id IN (${inList}) ORDER BY id ASC`,
+    `SELECT
+        order_id AS orderId,
+        product_id AS productId,
+        slug, name,
+        image_url AS imageUrl,
+        quantity,
+        unit_price_cents AS unitPriceCents,
+        final_unit_price_cents AS finalUnitPriceCents,
+        line_final_cents AS lineFinalCents
+     FROM order_items
+     WHERE order_id IN (${inList})
+     ORDER BY id ASC`,
     ids
   )) as unknown as Array<{
-    order_id: number;
-    product_id: number | null;
+    orderId: number;
+    productId: number | null;
     slug: string;
     name: string;
-    image_url: string | null;
+    imageUrl: string | null;
     quantity: number;
-    unit_price_cents: number;
-    final_unit_price_cents: number;
-    line_final_cents: number;
+    unitPriceCents: number;
+    finalUnitPriceCents: number;
+    lineFinalCents: number;
   }>;
 
   const byOrder: Record<number, ApiOrderItem[]> = {};
   for (const r of items) {
-    (byOrder[r.order_id] ||= []).push({
-      productId: r.product_id ?? null,
+    (byOrder[r.orderId] ||= []).push({
+      productId: r.productId ?? null,
       slug: r.slug,
       name: r.name,
-      imageUrl: r.image_url || "",
+      imageUrl: r.imageUrl || "",
       quantity: r.quantity,
-      unitPriceCents: r.unit_price_cents,
-      finalUnitPriceCents: r.final_unit_price_cents,
-      lineFinalCents: r.line_final_cents,
+      unitPriceCents: r.unitPriceCents,
+      finalUnitPriceCents: r.finalUnitPriceCents,
+      lineFinalCents: r.lineFinalCents,
     });
   }
 
-  return orders.map((o) => {
-    const its = byOrder[o.id] || [];
-    const computedTotal = its.reduce((s, it) => s + Number(it.lineFinalCents || 0), 0);
-    return {
-      id: o.id,
-      createdAt: new Date(String(o.created_at)).toISOString(),
-      totalCents: o.total_cents ?? computedTotal,
-      items: its,
-    };
-  });
+  return orders.map((o) => ({
+    id: o.id,
+    createdAt: new Date(String(o.createdAt)).toISOString(),
+    totalCents: Number(o.totalCents ?? 0),
+    items: byOrder[o.id] || [],
+  }));
 }

@@ -1,3 +1,4 @@
+// app/api/cart/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import {
@@ -24,7 +25,7 @@ async function buildCartResponse(c: CookieStore, cartId: string) {
   const ref = readReferralCookie(c);
   const raw = await getCartItemsRaw(cartId);
 
-  const { items, subtotal, total, discount } = applyDiscountsToItems(raw, {
+  const { items, subtotal, total, discount } = applyDiscountsToItems(raw as any, {
     enabled: isReferralValid(ref),
     referral: ref,
   });

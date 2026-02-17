@@ -1,3 +1,4 @@
+// app/api/checkout/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import {
@@ -32,27 +33,26 @@ export async function POST() {
     const raw = await getCartItemsRaw(cartId);
     if (!raw.length) return NextResponse.json({ error: "CART_EMPTY" }, { status: 400 });
 
-    // İndirim (landing/sitewide kurallarıyla)
     const ref = readReferralCookie(c);
-    const { items, total } = applyDiscountsToItems(raw, {
+
+    const { items, total } = applyDiscountsToItems(raw as any, {
       enabled: isReferralValid(ref),
       referral: ref,
     });
 
     // 1) siparişi kaydet
-    const orderId = await recordOrder(email, items, total);
+    const orderId = await recordOrder(email, items as any, total);
 
-    // 2) Cabo POST (ref geçerliyse)
-    if (ref && isReferralValid(ref) && (process.env.CABO_WEBHOOK_URL || "").length > 0) {
+    // 2) Cabo POST (ref geçerliyse + webhook url varsa)
+    const webhook = (process.env.CABO_WEBHOOK_URL || "").trim();
+    if (ref && isReferralValid(ref) && webhook) {
       const byIds = String(process.env.CABO_USE_PRODUCT_IDS || "0") === "1";
-      const map   = loadMap();
+      const map = loadMap();
       const scope = getAttributionScope();
 
-      // yalnızca eligible (landing/sitewide) olan satın alınan ürünler post edilsin
-      const effective = items.filter((it) => isSlugEligible(scope, map, it.slug, ref));
-
+      const effective = items.filter((it: any) => isSlugEligible(scope, map, it.slug, ref));
       if (effective.length) {
-        const caboItems = effective.map((it) => ({
+        const caboItems = effective.map((it: any) => ({
           product_id: byIds ? it.productId : undefined,
           product_code: !byIds ? (map[it.slug]?.code || undefined) : undefined,
           quantity: it.quantity,
@@ -64,9 +64,8 @@ export async function POST() {
           orderId,
           cartId,
           email,
-          token: ref?.token || null,
-          // 🔧 DÜZELTİLEN SATIR: any cast yok, doğal birlik: string | number | null
-          linkId: ref?.lid ?? null,
+          token: ref.token,
+          linkId: ref.lid,
           items: caboItems,
           total_cents: total,
         });
@@ -77,9 +76,6 @@ export async function POST() {
     await clearCart(cartId);
     return NextResponse.json({ ok: true, cartId, orderId });
   } catch (err) {
-    return NextResponse.json(
-      { error: "UNEXPECTED", message: String(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "UNEXPECTED", message: String(err) }, { status: 500 });
   }
 }

@@ -1,113 +1,103 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-import { getAllProducts } from "@/lib/queries";
-import { formatTRY } from "@/lib/money";
+// src/app/products/page.tsx
 import Link from "next/link";
 import { cookies } from "next/headers";
-import {
-  readReferralCookie,
-  type CookieStore,
-  isReferralValid,
-  type ReferralAttrib,
-} from "@/lib/cookies";
-import { applyDiscountsToItems } from "@/lib/discounter";
+import { getAllProducts } from "@/lib/queries";
+import type { Product } from "@/lib/types";
+import { readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
+import { loadMap, getAttributionScope, isSlugEligible } from "@/lib/discounter";
 
-const PLACEHOLDER = "https://placehold.co/800x600?text=Product";
-
-function buildRenderReferral(searchParams?: Record<string, string | string[] | undefined>): ReferralAttrib | null {
-  const token = typeof searchParams?.token === "string" ? searchParams.token.trim() : "";
-  const lid = typeof searchParams?.lid === "string" ? searchParams.lid.trim() : "";
-  const linkId = typeof searchParams?.linkId === "string" ? searchParams.linkId.trim() : "";
-  const slug = typeof searchParams?.slug === "string" ? searchParams.slug.trim() : "";
-
-  const effectiveLid = lid || linkId;
-
-  if (!token || token.length < 16) return null;
-  if (!effectiveLid) return null;
-
-  const ts = Math.floor(Date.now() / 1000);
-  return { token, lid: effectiveLid, slug: slug || null, ts };
+function formatCentsTRY(cents: number) {
+  const value = (Number(cents || 0) / 100).toFixed(2);
+  return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(Number(value));
 }
 
-function queryFromRef(ref: ReferralAttrib | null | undefined) {
-  if (!ref?.token || !ref?.lid) return "";
-  const t = encodeURIComponent(String(ref.token));
-  const l = encodeURIComponent(String(ref.lid));
-  return `?token=${t}&lid=${l}`;
+function applyPct(priceCents: number, pct: number) {
+  const p = Math.max(0, Number(priceCents) || 0);
+  const d = Math.max(0, Math.min(95, Number(pct) || 0));
+  return Math.round(p * (1 - d / 100));
 }
 
-export default async function ProductsPage({
-  searchParams,
-}: {
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const products = await getAllProducts();
+function normalizePct(v: any): number {
+  if (v == null) return 0;
+  if (typeof v === "number") return v <= 1 ? v * 100 : v;
+  const s = String(v).trim();
+  if (!s) return 0;
+  if (s.endsWith("%")) {
+    const n = Number(s.slice(0, -1));
+    return Number.isFinite(n) ? n : 0;
+  }
+  const n = Number(s);
+  if (!Number.isFinite(n)) return 0;
+  return n <= 1 ? n * 100 : n;
+}
 
-  const sp = (await searchParams) || {};
-  const c = cookies() as unknown as CookieStore; // ✅ await YOK
-  const refCookie = readReferralCookie(c);
-  const refFromUrl = buildRenderReferral(sp);
+export default async function ProductsPage() {
+  const products: Product[] = await getAllProducts();
 
-  const ref = isReferralValid(refCookie) ? refCookie : refFromUrl;
-  const enabled = isReferralValid(ref);
-  const q = queryFromRef(ref);
+  // ✅ Referral cookie -> indirim rule’ları
+  const c = (await cookies()) as unknown as CookieStore;
+  const ref = readReferralCookie(c);
+  const refOk = isReferralValid(ref);
+
+  const map = loadMap();
+  const scope = getAttributionScope();
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <h1 className="text-3xl font-semibold mb-6">Ürünler</h1>
+    <div className="mx-auto max-w-6xl px-4 py-8">
+      <div className="mb-6 flex items-end justify-between">
+        <h1 className="text-2xl font-semibold">Products</h1>
+        <Link href="/cart" className="text-sm underline underline-offset-4">
+          Go to Cart
+        </Link>
+      </div>
 
-      <div className="grid md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {products.map((p) => {
-          const price = p.priceCents;
-          let pct = 0;
-          let finalPrice = p.priceCents;
+          const eligible = refOk && ref ? isSlugEligible(scope, map, p.slug, ref) : false;
+          const pct = eligible ? normalizePct(map[p.slug]?.discount) : 0;
+          const hasDiscount = eligible && pct > 0;
 
-          if (enabled && ref) {
-            const one = applyDiscountsToItems(
-              [
-                {
-                  product_id: p.id,
-                  slug: p.slug,
-                  name: p.name,
-                  image_url: p.imageUrl || "",
-                  quantity: 1,
-                  unit_price_cents: p.priceCents,
-                },
-              ],
-              { enabled, referral: ref }
-            ).items[0];
-
-            pct = one.discountPct;
-            finalPrice = one.finalUnitPriceCents;
-          }
-
-          const img = p.imageUrl?.trim() ? p.imageUrl : PLACEHOLDER;
+          const finalCents = hasDiscount ? applyPct(p.priceCents, pct) : p.priceCents;
 
           return (
             <Link
               key={p.id}
-              href={`/products/${p.slug}${q}`}
-              className="card block overflow-hidden hover:border-neutral-600 transition"
+              href={`/products/${p.slug}`}
+              className="rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4 hover:bg-neutral-950/60 transition"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={img} alt={p.name} className="w-full h-56 object-cover" />
+              <div className="aspect-[16/10] w-full overflow-hidden rounded-xl bg-neutral-900">
+                {/* imageUrl boş olabilir; bozmuyoruz */}
+                {p.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={p.imageUrl} alt={p.name} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="h-full w-full" />
+                )}
+              </div>
 
-              <div className="p-4">
-                <div className="font-semibold">{p.name}</div>
-                <div className="text-neutral-400 text-sm mt-1 line-clamp-2">{p.description}</div>
-
-                <div className="mt-2 font-bold flex items-center gap-2">
-                  {pct > 0 ? (
+              <div className="mt-3">
+                <div className="text-lg font-semibold">{p.name}</div>
+                <div className="mt-2 flex items-center gap-2">
+                  {hasDiscount ? (
                     <>
-                      <span className="text-neutral-500 line-through">{formatTRY(price)}</span>
-                      <span>{formatTRY(finalPrice)}</span>
-                      <span className="text-emerald-400 text-xs">%{pct} indirim</span>
+                      <div className="text-xl font-semibold">{formatCentsTRY(finalCents)}</div>
+                      <div className="text-sm text-neutral-400 line-through">
+                        {formatCentsTRY(p.priceCents)}
+                      </div>
+                      <div className="text-xs rounded-full border border-neutral-700 px-2 py-1">
+                        -{Math.round(pct)}%
+                      </div>
                     </>
                   ) : (
-                    <span>{formatTRY(price)}</span>
+                    <div className="text-xl font-semibold">{formatCentsTRY(p.priceCents)}</div>
                   )}
                 </div>
+
+                {hasDiscount ? (
+                  <div className="mt-2 text-xs text-neutral-400">
+                    Referral discount active
+                  </div>
+                ) : null}
               </div>
             </Link>
           );
