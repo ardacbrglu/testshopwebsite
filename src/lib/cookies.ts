@@ -36,6 +36,11 @@ function timingSafeEq(a: string, b: string) {
   return A.length === B.length && timingSafeEqual(A, B);
 }
 
+function getStringField(obj: Record<string, unknown>, key: string): string | null {
+  const v = obj[key];
+  return typeof v === "string" ? v : null;
+}
+
 export function readCartId(c: CookieStore) {
   const v = c.get(CART_COOKIE)?.value;
   return v ? String(v) : null;
@@ -74,23 +79,18 @@ export function readReferralCookie(c: CookieStore): Referral | null {
     const expected = sign(json);
     if (!expected || !timingSafeEq(expected, sig)) return null;
 
-    const o = JSON.parse(json) as unknown;
-    if (typeof o !== "object" || o === null) return null;
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== "object" || parsed === null) return null;
 
-    const obj = o as Record<string, unknown>;
+    const obj = parsed as Record<string, unknown>;
     if (obj.v !== 1) return null;
 
     const token = String(obj.token || "").trim();
     const lid = Number(obj.lid);
-    const scope = obj.scope === "landing" ? "landing" : "sitewide";
+    const scope: "landing" | "sitewide" = obj.scope === "landing" ? "landing" : "sitewide";
 
-    // ✅ hem verifiedSlug hem landingSlug kabul
-    const verifiedSlug =
-      typeof obj.verifiedSlug === "string"
-        ? String(obj.verifiedSlug)
-        : typeof (obj as any).landingSlug === "string"
-        ? String((obj as any).landingSlug)
-        : null;
+    // ✅ Backward compatible: verifiedSlug OR landingSlug
+    const verifiedSlug = getStringField(obj, "verifiedSlug") ?? getStringField(obj, "landingSlug");
 
     const iat = Number(obj.iat);
     const exp = Number(obj.exp);
