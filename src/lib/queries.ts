@@ -7,6 +7,34 @@ import type { Product, RawCartRow, ApiCartItem, ApiOrder, ApiOrderItem } from ".
 type Row = Record<string, unknown>;
 const normEmail = (e: string) => String(e || "").trim().toLowerCase();
 
+/**
+ * DB'den gelen TINYINT(1)/boolean/string gibi değerleri güvenle boolean|null'a çevirir.
+ * - true/false
+ * - 1/0
+ * - "1"/"0"
+ * - "true"/"false"
+ */
+function toNullableBool(v: unknown): boolean | null {
+  if (v == null) return null;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v !== 0 : null;
+
+  const s = String(v).trim().toLowerCase();
+  if (s === "") return null;
+
+  if (["1", "true", "yes", "y", "on"].includes(s)) return true;
+  if (["0", "false", "no", "n", "off"].includes(s)) return false;
+
+  const n = Number(s);
+  return Number.isFinite(n) ? n !== 0 : null;
+}
+
+function toNullableString(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v);
+  return s.length ? s : null;
+}
+
 async function listColumns(table: string): Promise<string[]> {
   const rows = (await query(
     `SELECT column_name AS name FROM information_schema.columns
@@ -15,6 +43,7 @@ async function listColumns(table: string): Promise<string[]> {
   )) as unknown as Array<{ name: string }>;
   return (rows || []).map((r) => String(r.name));
 }
+
 function pick(cols: string[], re: RegExp) {
   return cols.find((c) => re.test(c)) || null;
 }
@@ -271,8 +300,8 @@ export async function getAllProducts(): Promise<Product[]> {
     description: String((r.description as string) || ""),
     imageUrl: String((r.imageUrl as string) || ""),
     priceCents: Number((r.priceCents as number) ?? 0),
-    isActive: (r.isActive as any) ?? null,
-    caboCode: (r.caboCode as any) ?? null,
+    isActive: toNullableBool(r.isActive),
+    caboCode: toNullableString(r.caboCode),
   }));
 }
 
@@ -290,8 +319,8 @@ export async function getProductBySlug(slug: string): Promise<Product | null> {
     description: String((r.description as string) || ""),
     imageUrl: String((r.imageUrl as string) || ""),
     priceCents: Number((r.priceCents as number) ?? 0),
-    isActive: (r.isActive as any) ?? null,
-    caboCode: (r.caboCode as any) ?? null,
+    isActive: toNullableBool(r.isActive),
+    caboCode: toNullableString(r.caboCode),
   };
 }
 
