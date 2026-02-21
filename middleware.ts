@@ -1,23 +1,14 @@
-// middleware.ts
 import { NextResponse, type NextRequest } from "next/server";
 
 export const runtime = "edge";
 
 /**
- * TestShop — Cabo Attribution Middleware (PROD)
+ * TestShop — Cabo Attribution Middleware (FIXED)
  *
- * FIX:
- * - Railway edge ortamında req.url bazen internal origin (https://localhost:8080) dönebiliyor.
- * - Cabo allowlist kontrolü için "public origin" hesaplayıp x-testshop-origin olarak onu gönderiyoruz.
- *
- * Akış:
- * - URL'de token & lid varsa Cabo Verify çağır
- * - Verify OK ise attribution cookie ("cabo_attrib") set et
- * - URL'den token/lid temizlemek için redirect yap
- *
- * Not:
- * - Middleware fetch istekleri browser Network tabında görünmez.
- *   Bu yüzden verify sonucunu response header + cabo_debug cookie ile görünür kılıyoruz.
+ * Fix:
+ * - url.origin Railway/edge bazı durumlarda localhost görünebiliyor.
+ * - Cabo allowlist için "x-testshop-origin" kesinlikle public origin olmalı.
+ * - Public origin'i x-forwarded-host/proto ile hesaplıyoruz.
  */
 
 const REF_COOKIE = "cabo_attrib";
@@ -26,13 +17,8 @@ const DEBUG_COOKIE = "cabo_debug";
 const TTL_DAYS = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
 const ATTRIB_TTL_SEC = Number(process.env.CABO_ATTRIB_TTL_SEC || 36000);
 
-const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim(); // e.g. https://cabo.../api/testshop_verify
+const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim();
 const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim();
-const ATTR_SCOPE_ENV = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim();
-
-// Opsiyonel override (istersen ekleyebilirsin):
-// CABO_PUBLIC_ORIGIN=https://testshopwebsite-production.up.railway.app
-const PUBLIC_ORIGIN_OVERRIDE = String(process.env.CABO_PUBLIC_ORIGIN || "").trim().replace(/\/+$/, "");
 
 function b64url(input: string) {
   const bytes = new TextEncoder().encode(input);
@@ -44,9 +30,13 @@ function b64url(input: string) {
 
 async function hmacHex(message: string, secret: string) {
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
-    "sign",
-  ]);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -68,40 +58,20 @@ function safeSlugFromPath(pathname: string) {
   return null;
 }
 
-function setDebugCookie(res: NextResponse, val: string, url: URL) {
-  res.cookies.set(DEBUG_COOKIE, val.slice(0, 180), {
-    httpOnly: false, // DEBUG: devtools'ta görünür olsun
-    secure: url.protocol === "https:",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60, // 1h
-  });
-}
-
-function firstHeaderValue(h: string | null) {
-  if (!h) return "";
-  // "a,b,c" gelirse ilkini al
-  return h.split(",")[0]?.trim() || "";
-}
-
 /**
- * Railway/Proxy arkasında gerçek public origin hesapla.
- * - x-forwarded-proto + x-forwarded-host (en doğru)
- * - yoksa host + req.url protokolü fallback
- * - override env varsa onu kullan
+ * Railway/Proxy safe public origin
  */
-function getPublicOrigin(req: NextRequest, url: URL) {
-  if (PUBLIC_ORIGIN_OVERRIDE) return PUBLIC_ORIGIN_OVERRIDE;
+function getPublicOrigin(req: NextRequest) {
+  const xfHost = (req.headers.get("x-forwarded-host") || "").trim();
+  const xfProto = (req.headers.get("x-forwarded-proto") || "").trim() || "https";
+  if (xfHost) return `${xfProto}://${xfHost}`;
 
-  const xfProto = firstHeaderValue(req.headers.get("x-forwarded-proto"));
-  const xfHost = firstHeaderValue(req.headers.get("x-forwarded-host"));
+  // fallback: Host header
+  const host = (req.headers.get("host") || "").trim();
+  if (host) return `${xfProto}://${host}`;
 
-  const host = xfHost || firstHeaderValue(req.headers.get("host")) || url.host;
-  const proto = xfProto || url.protocol.replace(":", "") || "https";
-
-  if (!host) return url.origin.replace(/\/+$/, "");
-
-  return `${proto}://${host}`.replace(/\/+$/, "");
+  // last resort: url.origin
+  return new URL(req.url).origin;
 }
 
 export const config = {
@@ -113,46 +83,60 @@ export async function middleware(req: NextRequest) {
 
   const token = (url.searchParams.get("token") || "").trim();
   const lid = parsePositiveInt(url.searchParams.get("lid"));
-
   if (!token || !lid) return NextResponse.next();
 
+  // Always clean URL afterwards
+  url.searchParams.delete("token");
+  url.searchParams.delete("lid");
+
+  const resRedirect = NextResponse.redirect(url.toString(), 302);
+  const secure = true;
+
+  // Quick validations
   if (!isLikelyValidToken(token)) {
-    url.searchParams.delete("token");
-    url.searchParams.delete("lid");
-    const res = NextResponse.redirect(url.toString(), 302);
-    res.headers.set("x-cabo-mw", "fail:bad_token");
-    setDebugCookie(res, `fail_bad_token_${Date.now()}`, url);
-    return res;
+    resRedirect.cookies.set(DEBUG_COOKIE, `fail_bad_token_${Date.now()}`, {
+      path: "/",
+      maxAge: 3600,
+      secure,
+      sameSite: "lax",
+    });
+    return resRedirect;
+  }
+  if (!VERIFY_URL) {
+    resRedirect.cookies.set(DEBUG_COOKIE, `fail_missing_VERIFY_URL_${Date.now()}`, {
+      path: "/",
+      maxAge: 3600,
+      secure,
+      sameSite: "lax",
+    });
+    return resRedirect;
+  }
+  if (!HMAC_SECRET) {
+    resRedirect.cookies.set(DEBUG_COOKIE, `fail_missing_HMAC_SECRET_${Date.now()}`, {
+      path: "/",
+      maxAge: 3600,
+      secure,
+      sameSite: "lax",
+    });
+    return resRedirect;
   }
 
-  if (!VERIFY_URL || !HMAC_SECRET) {
-    url.searchParams.delete("token");
-    url.searchParams.delete("lid");
-    const res = NextResponse.redirect(url.toString(), 302);
-    res.headers.set("x-cabo-mw", "fail:missing_env");
-    setDebugCookie(res, `fail_missing_env_${Date.now()}`, url);
-    return res;
-  }
+  const slug = safeSlugFromPath(new URL(req.url).pathname);
+  const publicOrigin = getPublicOrigin(req);
 
-  const slug = safeSlugFromPath(url.pathname);
-
-  let verifyStatus = 0;
   let verifyOk = false;
   let verifiedSlug: string | null = null;
-
-  const forwarded: Record<string, string> = {};
-
-  // ✅ gerçek public origin
-  const publicOrigin = getPublicOrigin(req, url);
+  let failReason = "unknown";
 
   try {
-    const r = await fetch(`${VERIFY_URL.replace(/\/$/, "")}/verify`, {
+    const verifyEndpoint = `${VERIFY_URL.replace(/\/$/, "")}/verify`;
+
+    const r = await fetch(verifyEndpoint, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        // ✅ Cabo allowlist için doğru origin:
+        // ✅ critical: must match Cabo TESTSHOP_ORIGIN exactly
         "x-testshop-origin": publicOrigin,
-        // meta:
         "x-testshop-ua": req.headers.get("user-agent") || "",
         "x-testshop-referer": req.headers.get("referer") || "",
       },
@@ -160,55 +144,41 @@ export async function middleware(req: NextRequest) {
       cache: "no-store",
     });
 
-    verifyStatus = r.status;
-
-    // Cabo debug header’larını yakala
-    const h = r.headers;
-    const keys = ["x-cabo-origin", "x-cabo-claimed", "x-cabo-allowed", "x-cabo-allowed-origin"];
-    for (const k of keys) {
-      const v = h.get(k);
-      if (v) forwarded[k] = v;
-    }
-
     if (r.ok) {
-      const dataUnknown = await r.json().catch(() => null);
-      if (dataUnknown && typeof dataUnknown === "object") {
-        const data = dataUnknown as Record<string, unknown>;
-        if (data.ok === true) {
-          verifyOk = true;
-          verifiedSlug = typeof data.slug === "string" ? data.slug : null;
-        }
+      const data = (await r.json().catch(() => null)) as unknown;
+      const d = data as Record<string, unknown> | null;
+      if (d && d.ok === true) {
+        verifyOk = true;
+        verifiedSlug = typeof d.slug === "string" ? d.slug : null;
+      } else {
+        failReason = "bad_json";
       }
+    } else {
+      failReason = `verify_http_${r.status}`;
     }
-  } catch {
-    verifyOk = false;
-    verifyStatus = 0;
-    forwarded["x-cabo-allowed"] = "fetch_error";
+  } catch (e) {
+    failReason = `verify_fetch_error`;
   }
-
-  // URL temizle
-  url.searchParams.delete("token");
-  url.searchParams.delete("lid");
 
   if (!verifyOk) {
-    const res = NextResponse.redirect(url.toString(), 302);
-    res.headers.set("Cache-Control", "no-store");
-    res.headers.set("x-cabo-mw", `fail:verify_http_${verifyStatus || "0"}:${verifyStatus || "0"}`);
-    res.headers.set("x-cabo-status", String(verifyStatus || 0));
-
-    // debug forward
-    for (const [k, v] of Object.entries(forwarded)) res.headers.set(k, v);
-
-    // Ek debug: middleware’in hesapladığı publicOrigin’i de göster
-    res.headers.set("x-testshop-public-origin", publicOrigin);
-
-    setDebugCookie(res, `fail_verify_http_${verifyStatus || 0}_${Date.now()}`, url);
-    return res;
+    // debug cookie only
+    resRedirect.cookies.set(DEBUG_COOKIE, `fail_${failReason}_${Date.now()}`, {
+      path: "/",
+      maxAge: 3600,
+      secure,
+      sameSite: "lax",
+    });
+    // also help debugging in headers
+    resRedirect.headers.set("x-testshop-public-origin", publicOrigin);
+    resRedirect.headers.set("x-testshop-fail", failReason);
+    resRedirect.headers.set("Cache-Control", "no-store");
+    return resRedirect;
   }
 
-  // OK => attribution cookie
+  // Build attribution payload
   const now = Math.floor(Date.now() / 1000);
-  const scope = ATTR_SCOPE_ENV === "landing" ? "landing" : "sitewide";
+  const scopeEnv = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim();
+  const scope = scopeEnv === "landing" ? "landing" : "sitewide";
 
   const payload = {
     v: 1,
@@ -225,23 +195,22 @@ export async function middleware(req: NextRequest) {
   const sig = await hmacHex(payloadJson, HMAC_SECRET);
   const cookieValue = `${p}.${sig}`;
 
-  const res = NextResponse.redirect(url.toString(), 302);
-  res.headers.set("Cache-Control", "no-store");
-  res.headers.set("x-cabo-mw", "ok:set_cookie");
-  res.headers.set("x-cabo-status", String(verifyStatus || 200));
-
-  for (const [k, v] of Object.entries(forwarded)) res.headers.set(k, v);
-  res.headers.set("x-testshop-public-origin", publicOrigin);
-
-  res.cookies.set(REF_COOKIE, cookieValue, {
+  resRedirect.cookies.set(REF_COOKIE, cookieValue, {
     httpOnly: true,
-    secure: url.protocol === "https:",
+    secure,
     sameSite: "lax",
     path: "/",
     maxAge: TTL_DAYS * 24 * 60 * 60,
   });
 
-  setDebugCookie(res, `ok_${Date.now()}`, url);
+  resRedirect.cookies.set(DEBUG_COOKIE, `ok_${Date.now()}`, {
+    path: "/",
+    maxAge: 3600,
+    secure,
+    sameSite: "lax",
+  });
 
-  return res;
+  resRedirect.headers.set("x-testshop-public-origin", publicOrigin);
+  resRedirect.headers.set("Cache-Control", "no-store");
+  return resRedirect;
 }
