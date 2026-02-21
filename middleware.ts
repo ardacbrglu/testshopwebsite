@@ -15,12 +15,12 @@ function isPositiveInt(s: string) {
   return Number.isFinite(n) && n > 0 && Math.floor(n) === n;
 }
 
-function base64UrlFromUtf8(str: string) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  const b64 = btoa(bin);
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+function b64url(input: string) {
+  return Buffer.from(input, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function hexFromBytes(bytes: ArrayBuffer) {
@@ -44,53 +44,39 @@ async function hmacHex(message: string) {
   return hexFromBytes(sig);
 }
 
-function cleanUrl(req: NextRequest) {
-  const cleaned = new URL(req.url);
-  cleaned.searchParams.delete("token");
-  cleaned.searchParams.delete("lid");
-  return cleaned;
-}
-
 export async function middleware(req: NextRequest) {
   const url = req.nextUrl;
-
-  // API requestlerine dokunma (ref mekanizması sadece page navigation)
-  if (url.pathname.startsWith("/api/")) return NextResponse.next();
-
   const token = (url.searchParams.get("token") || "").trim();
   const lidStr = (url.searchParams.get("lid") || "").trim();
 
   // token/lid yoksa dokunma
   if (!token && !lidStr) return NextResponse.next();
 
-  // Her durumda token/lid URL'de kalmasın
-  const cleaned = cleanUrl(req);
-
-  // kaba validasyon fail => cookie temizle + clean redirect
+  // kaba validasyon fail => referral cookie temizle (varsa)
   if (!isProbablyToken(token) || !isPositiveInt(lidStr)) {
-    const res = NextResponse.redirect(cleaned, 302);
+    const res = NextResponse.next();
     res.cookies.delete("cabo_attrib");
     return res;
   }
 
-  // verify url veya secret yoksa güvenli attribution yapamayız
   if (!CABO_VERIFY_URL || !CABO_HMAC_SECRET) {
-    const res = NextResponse.redirect(cleaned, 302);
+    // verify url veya secret yoksa güvenli attribution yapamayız
+    const res = NextResponse.next();
     res.cookies.delete("cabo_attrib");
     return res;
   }
 
-  // URL’den slug hint (opsiyonel)
-  const parts = (url.pathname || "/").split("/").filter(Boolean);
-  const hintedSlug = parts.length >= 2 && parts[0] === "products" ? parts[1] : null;
+  const pathname = url.pathname || "/";
+  const parts = pathname.split("/").filter(Boolean);
+
+  // ✅ landing slug sadece landing modda kullanılmalı
+  const isLandingMode = CABO_ATTRIBUTION_SCOPE === "landing";
+  const landingSlug =
+    isLandingMode && parts.length >= 2 && parts[0] === "products" ? parts[1] : null;
 
   const origin = url.origin;
   const ua = req.headers.get("user-agent") || "";
   const referer = req.headers.get("referer") || "";
-  const clientIp =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    req.headers.get("x-real-ip") ||
-    "";
 
   try {
     const postTo = CABO_VERIFY_URL.replace(/\/$/, "") + "/verify";
@@ -102,50 +88,45 @@ export async function middleware(req: NextRequest) {
         "x-testshop-origin": origin,
         "x-testshop-ua": ua,
         "x-testshop-referer": referer,
-        "x-testshop-ip": clientIp, // Cabo tarafı isterse ileride bunu kullanır
       },
       body: JSON.stringify({
         token,
         lid: Number(lidStr),
-        slug: hintedSlug,
+        // ✅ sitewide modda slug yollama (slug_mismatch ile referral ölmesin)
+        slug: landingSlug,
       }),
       cache: "no-store",
     });
 
     if (!r.ok) {
-      const res = NextResponse.redirect(cleaned, 302);
+      const res = NextResponse.next();
       res.cookies.delete("cabo_attrib");
       return res;
     }
 
-    const data = (await r.json().catch(() => null)) as unknown;
+    const data: unknown = await r.json().catch(() => null);
     const ok =
       typeof data === "object" &&
       data !== null &&
-      (data as Record<string, unknown>).ok === true;
+      "ok" in data &&
+      (data as { ok: unknown }).ok === true;
 
     if (!ok) {
-      const res = NextResponse.redirect(cleaned, 302);
+      const res = NextResponse.next();
       res.cookies.delete("cabo_attrib");
       return res;
     }
 
-    const verifiedSlugRaw =
-      typeof (data as Record<string, unknown>).slug === "string"
-        ? String((data as Record<string, unknown>).slug)
-        : null;
-
+    // ✅ verified → cookie set + URL temizle
     const now = Math.floor(Date.now() / 1000);
     const ttl = Math.max(60, Math.min(CABO_ATTRIB_TTL_SEC, CABO_COOKIE_TTL_DAYS * 86400));
-    const scope = CABO_ATTRIBUTION_SCOPE === "landing" ? "landing" : "sitewide";
 
-    // ✅ Cookie payload: verifiedSlug (landing mode bununla çalışacak)
     const payload = {
       v: 1,
       token,
       lid: Number(lidStr),
-      scope,
-      verifiedSlug: verifiedSlugRaw,
+      scope: isLandingMode ? "landing" : "sitewide",
+      landingSlug: landingSlug,
       iat: now,
       exp: now + ttl,
     };
@@ -153,17 +134,21 @@ export async function middleware(req: NextRequest) {
     const json = JSON.stringify(payload);
     const sig = await hmacHex(json);
     if (!sig) {
-      const res = NextResponse.redirect(cleaned, 302);
+      const res = NextResponse.next();
       res.cookies.delete("cabo_attrib");
       return res;
     }
 
-    const cookieVal = `${base64UrlFromUtf8(json)}.${sig}`;
+    const cookieVal = `${b64url(json)}.${sig}`;
+
+    const cleaned = new URL(req.url);
+    cleaned.searchParams.delete("token");
+    cleaned.searchParams.delete("lid");
 
     const res = NextResponse.redirect(cleaned, 302);
     res.cookies.set("cabo_attrib", cookieVal, {
       httpOnly: true,
-      secure: url.protocol === "https:",
+      secure: true,
       sameSite: "lax",
       path: "/",
       maxAge: ttl,
@@ -171,7 +156,7 @@ export async function middleware(req: NextRequest) {
 
     return res;
   } catch {
-    const res = NextResponse.redirect(cleaned, 302);
+    const res = NextResponse.next();
     res.cookies.delete("cabo_attrib");
     return res;
   }
