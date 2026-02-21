@@ -1,4 +1,3 @@
-// src/app/cart/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,8 +14,35 @@ type CartResp = {
   subtotalCents: number;
   discountCents: number;
   totalCents: number;
-  referral: null | { token: string; lid: number; scope: string; verifiedSlug: string | null; exp: number };
+  referral: null | {
+    token: string;
+    lid: number;
+    scope: string;
+    verifiedSlug: string | null;
+    exp: number;
+  };
 };
+
+type CheckoutErrorResp = {
+  error?: string;
+  message?: string;
+};
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function getCheckoutErrorMessage(v: unknown): string {
+  if (!isObject(v)) return "CHECKOUT_FAILED";
+
+  const err = v.error;
+  const msg = v.message;
+
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (typeof msg === "string" && msg.trim()) return msg.trim();
+
+  return "CHECKOUT_FAILED";
+}
 
 export default function CartPage() {
   const { show } = useToast();
@@ -45,7 +71,7 @@ export default function CartPage() {
       return;
     }
     const r = await fetch(`/api/orders?email=${encodeURIComponent(e)}`, { cache: "no-store" });
-    const j = (await r.json()) as { orders: ApiOrder[] };
+    const j = (await r.json().catch(() => ({ orders: [] }))) as { orders?: ApiOrder[] };
     setOrders(Array.isArray(j.orders) ? j.orders : []);
   }
 
@@ -86,10 +112,12 @@ export default function CartPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: e }),
     });
+
     if (!r.ok) {
       show({ type: "error", title: "Email geçersiz / kaydedilemedi" });
       return;
     }
+
     show({ type: "success", title: "Email kaydedildi" });
     await loadCart();
     await loadOrders(e);
@@ -97,10 +125,11 @@ export default function CartPage() {
 
   async function checkout() {
     const r = await fetch("/api/checkout", { method: "POST" });
-    const j = await r.json().catch(() => null);
+
+    const j = (await r.json().catch(() => ({}))) as CheckoutErrorResp;
 
     if (!r.ok) {
-      const msg = j && typeof j === "object" && "error" in j ? String((j as any).error) : "CHECKOUT_FAILED";
+      const msg = getCheckoutErrorMessage(j);
       show({ type: "error", title: msg });
       return;
     }
@@ -147,7 +176,10 @@ export default function CartPage() {
                 placeholder="you@example.com"
                 className="flex-1 rounded-xl border border-neutral-700 bg-transparent px-3 py-2"
               />
-              <button onClick={saveEmail} className="rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900">
+              <button
+                onClick={saveEmail}
+                className="rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900"
+              >
                 Save
               </button>
             </div>
@@ -204,11 +236,15 @@ export default function CartPage() {
                         <div className="text-sm text-neutral-400">#{o.id}</div>
                         <div className="font-semibold">{formatTRY(o.totalCents)}</div>
                       </div>
-                      <div className="mt-2 text-xs text-neutral-500">{new Date(o.createdAt).toLocaleString("tr-TR")}</div>
+                      <div className="mt-2 text-xs text-neutral-500">
+                        {new Date(o.createdAt).toLocaleString("tr-TR")}
+                      </div>
                       <div className="mt-2 text-sm text-neutral-300">
                         {o.items.map((it) => (
                           <div key={`${o.id}-${it.slug}`} className="flex justify-between">
-                            <span>{it.name} × {it.quantity}</span>
+                            <span>
+                              {it.name} × {it.quantity}
+                            </span>
                             <span>{formatTRY(it.lineFinalCents)}</span>
                           </div>
                         ))}
