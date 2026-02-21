@@ -1,4 +1,8 @@
 // src/app/products/page.tsx
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { getAllProducts } from "@/lib/queries";
@@ -33,8 +37,7 @@ function normalizePct(v: unknown): number {
 }
 
 export default async function ProductsPage() {
-  const products: Product[] = await getAllProducts();
-
+  // ✅ cookies() çağrısı + dynamic exports => Next bu sayfayı build'de SSG etmeye kalkmaz.
   const c = (await cookies()) as unknown as CookieStore;
   const ref = readReferralCookie(c);
   const refOk = isReferralValid(ref);
@@ -42,57 +45,80 @@ export default async function ProductsPage() {
   const map = loadMap();
   const scope = getAttributionScope();
 
+  const products: Product[] = await getAllProducts();
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
-      <div className="mb-6 flex items-end justify-between">
-        <h1 className="text-2xl font-semibold">Products</h1>
+      <div className="mb-6 flex items-center justify-between">
+        <Link href="/" className="text-sm underline underline-offset-4">
+          ← Home
+        </Link>
         <Link href="/cart" className="text-sm underline underline-offset-4">
           Cart
         </Link>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <h1 className="text-2xl font-semibold">Products</h1>
+      <p className="mt-2 text-sm text-neutral-400">
+        {refOk ? "Referral active: eligible products show discounted prices." : "No active referral."}
+      </p>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {products.map((p) => {
           const eligible = refOk && ref ? isSlugEligible(scope, map, p.slug, ref) : false;
           const pct = eligible ? normalizePct(map[p.slug]?.discount) : 0;
           const hasDiscount = eligible && pct > 0;
-
           const finalCents = hasDiscount ? applyPct(p.priceCents, pct) : p.priceCents;
 
           return (
-            <Link
-              key={p.id}
-              href={`/products/${p.slug}`}
-              className="rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4 hover:bg-neutral-950/60 transition"
+            <div
+              key={p.slug}
+              className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950/40"
             >
-              <div className="aspect-[16/10] w-full overflow-hidden rounded-xl bg-neutral-900">
+              <Link href={`/products/${p.slug}`} className="block">
                 {p.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={p.imageUrl} alt={p.name} className="h-full w-full object-cover" />
+                  <img src={p.imageUrl} alt={p.name} className="h-48 w-full object-cover" />
                 ) : (
-                  <div className="h-full w-full" />
+                  <div className="h-48 w-full bg-neutral-900" />
                 )}
-              </div>
 
-              <div className="mt-3">
-                <div className="text-lg font-semibold">{p.name}</div>
-                <div className="mt-2 flex items-center gap-2">
-                  {hasDiscount ? (
-                    <>
-                      <div className="text-xl font-semibold">{formatCentsTRY(finalCents)}</div>
-                      <div className="text-sm text-neutral-400 line-through">
-                        {formatCentsTRY(p.priceCents)}
-                      </div>
-                      <div className="text-xs rounded-full border border-neutral-700 px-2 py-1">
-                        -{Math.round(pct)}%
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-xl font-semibold">{formatCentsTRY(p.priceCents)}</div>
-                  )}
+                <div className="p-4">
+                  <div className="text-lg font-semibold">{p.name}</div>
+                  <div className="mt-2 flex items-center gap-3">
+                    {hasDiscount ? (
+                      <>
+                        <div className="text-base font-semibold">{formatCentsTRY(finalCents)}</div>
+                        <div className="text-xs text-neutral-400 line-through">
+                          {formatCentsTRY(p.priceCents)}
+                        </div>
+                        <div className="text-[11px] rounded-full border border-neutral-700 px-2 py-1">
+                          -{Math.round(pct)}%
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-base font-semibold">{formatCentsTRY(p.priceCents)}</div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 text-sm text-neutral-400 line-clamp-2">{p.description}</div>
                 </div>
+              </Link>
+
+              {/* Add to cart (server form POST) */}
+              <div className="p-4 pt-0">
+                <form action="/api/cart" method="post">
+                  <input type="hidden" name="slug" value={p.slug} />
+                  <input type="hidden" name="quantity" value="1" />
+                  <button
+                    type="submit"
+                    className="w-full rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900"
+                  >
+                    Add to cart
+                  </button>
+                </form>
               </div>
-            </Link>
+            </div>
           );
         })}
       </div>
