@@ -4,16 +4,17 @@ import { NextResponse, type NextRequest } from "next/server";
 export const runtime = "edge";
 
 /**
- * TestShop — Cabo Attribution Middleware (PROD)
+ * TestShop — Cabo Attribution Middleware (Debuggable)
  *
  * Flow:
  * - URL'de token & lid varsa:
- *    1) Cabo verify çağrısı (server-side / edge)
- *    2) verify ok => signed attribution cookie (cabo_attrib) set
- *    3) URL'den token/lid temizlenir (302 redirect)
+ *   1) Cabo Verify çağır (server-side, Network panelde görünmez)
+ *   2) OK => cabo_attrib cookie set + URL temizlenir (302)
+ *   3) FAIL => sadece URL temizlenir (302) + cabo_debug fail reason set
  *
  * Debug:
- * - cabo_debug (httpOnly=false) -> tarayıcıda görünür (cookie gerçekten set ediliyor mu diye)
+ * - cabo_debug cookie: ok_* / fail_* / skip_*
+ * - x-cabo-mw header: kısa özet (Response Headers'ta görünür)
  */
 
 const REF_COOKIE = "cabo_attrib";
@@ -22,11 +23,10 @@ const DEBUG_COOKIE = "cabo_debug";
 const TTL_DAYS = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
 const ATTRIB_TTL_SEC = Number(process.env.CABO_ATTRIB_TTL_SEC || 36000);
 
-const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim(); // https://cabo.../api/testshop_verify
-const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim();
-const SCOPE_ENV = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim().toLowerCase();
+const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim(); // e.g. https://cabo.../api/testshop_verify
+const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim(); // TestShop cookie signing secret
 
-function b64urlUtf8(input: string) {
+function b64url(input: string) {
   const bytes = new TextEncoder().encode(input);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
@@ -60,6 +60,17 @@ function safeSlugFromPath(pathname: string) {
   return null;
 }
 
+function setDebug(res: NextResponse, val: string) {
+  const secure = true; // railway https
+  res.cookies.set(DEBUG_COOKIE, val, {
+    httpOnly: false, // debug amaçlı görünür olsun
+    secure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60, // 1 saat
+  });
+}
+
 export const config = {
   matcher: ["/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
@@ -70,26 +81,56 @@ export async function middleware(req: NextRequest) {
   const token = (url.searchParams.get("token") || "").trim();
   const lid = parsePositiveInt(url.searchParams.get("lid"));
 
-  // token/lid yoksa normal devam
+  // token/lid yoksa dokunma
   if (!token || !lid) return NextResponse.next();
 
-  // kaba validasyon
-  if (!isLikelyValidToken(token)) return NextResponse.next();
+  // basic validation
+  if (!isLikelyValidToken(token)) {
+    const clean = new URL(url.toString());
+    clean.searchParams.delete("token");
+    clean.searchParams.delete("lid");
+    const res = NextResponse.redirect(clean.toString(), 302);
+    res.headers.set("x-cabo-mw", "skip:bad_token");
+    setDebug(res, `skip_bad_token_${Date.now()}`);
+    return res;
+  }
 
-  // env yoksa bu middleware attribution yapamaz -> URL temizlemeyelim (debug için daha iyi)
-  if (!VERIFY_URL || !HMAC_SECRET) return NextResponse.next();
+  // env check
+  if (!VERIFY_URL) {
+    const clean = new URL(url.toString());
+    clean.searchParams.delete("token");
+    clean.searchParams.delete("lid");
+    const res = NextResponse.redirect(clean.toString(), 302);
+    res.headers.set("x-cabo-mw", "fail:missing_verify_url");
+    setDebug(res, `fail_missing_verify_url_${Date.now()}`);
+    return res;
+  }
+  if (!HMAC_SECRET) {
+    const clean = new URL(url.toString());
+    clean.searchParams.delete("token");
+    clean.searchParams.delete("lid");
+    const res = NextResponse.redirect(clean.toString(), 302);
+    res.headers.set("x-cabo-mw", "fail:missing_hmac_secret");
+    setDebug(res, `fail_missing_hmac_secret_${Date.now()}`);
+    return res;
+  }
 
   const slug = safeSlugFromPath(url.pathname);
 
-  // --- 1) Cabo verify (server-side)
+  // verify
   let verifyOk = false;
   let verifiedSlug: string | null = null;
+  let reason = "verify_failed";
+  let statusText = "no_status";
 
   try {
-    const r = await fetch(`${VERIFY_URL.replace(/\/$/, "")}/verify`, {
+    const verifyEndpoint = `${VERIFY_URL.replace(/\/$/, "")}/verify`;
+
+    const r = await fetch(verifyEndpoint, {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        // Cabo tarafı allowlist kontrolü için:
         "x-testshop-origin": url.origin,
         "x-testshop-ua": req.headers.get("user-agent") || "",
         "x-testshop-referer": req.headers.get("referer") || "",
@@ -98,81 +139,75 @@ export async function middleware(req: NextRequest) {
       cache: "no-store",
     });
 
-    if (r.ok) {
-      const data = (await r.json().catch(() => null)) as unknown;
-      const d = data as any;
-      if (d && d.ok === true) {
-        verifyOk = true;
-        verifiedSlug = typeof d.slug === "string" ? d.slug : null;
+    statusText = String(r.status);
+
+    if (!r.ok) {
+      reason = `verify_http_${r.status}`;
+    } else {
+      const data: unknown = await r.json().catch(() => null);
+      if (typeof data === "object" && data !== null) {
+        const obj = data as Record<string, unknown>;
+        if (obj.ok === true) {
+          verifyOk = true;
+          verifiedSlug = typeof obj.slug === "string" ? obj.slug : null;
+        } else {
+          reason = typeof obj.error === "string" ? `verify_${obj.error}` : "verify_not_ok";
+        }
+      } else {
+        reason = "verify_bad_json";
       }
     }
-  } catch {
-    verifyOk = false;
+  } catch (e) {
+    reason = `verify_fetch_error`;
+    statusText = "fetch_error";
   }
 
-  // token/lid'i URL'den her durumda temizleyelim (senin istediğin davranış buydu)
-  url.searchParams.delete("token");
-  url.searchParams.delete("lid");
+  // URL temizle
+  const clean = new URL(url.toString());
+  clean.searchParams.delete("token");
+  clean.searchParams.delete("lid");
 
-  // verify fail => sadece temiz URL'ye dön
+  // FAIL => sadece redirect + debug
   if (!verifyOk) {
-    const res = NextResponse.redirect(url.toString(), 302);
-    res.headers.set("Cache-Control", "no-store");
-    // debug: verify fail bile görelim
-    res.cookies.set(DEBUG_COOKIE, `fail_${Date.now()}`, {
-      httpOnly: false,
-      secure: url.protocol === "https:",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 5,
-    });
+    const res = NextResponse.redirect(clean.toString(), 302);
+    res.headers.set("x-cabo-mw", `fail:${reason}:${statusText}`);
+    setDebug(res, `fail_${reason}_${statusText}_${Date.now()}`);
     return res;
   }
 
-  // --- 2) attribution cookie payload
+  // SUCCESS => attribution cookie set + debug
   const now = Math.floor(Date.now() / 1000);
-  const scope = SCOPE_ENV === "landing" ? "landing" : "sitewide";
+  const scopeEnv = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim().toLowerCase();
+  const scope: "landing" | "sitewide" = scopeEnv === "landing" ? "landing" : "sitewide";
 
   const payload = {
     v: 1,
     token,
     lid,
     scope,
-    // ✅ BUNU cookies.ts OKUYOR: verifiedSlug
     verifiedSlug: scope === "landing" ? (verifiedSlug || slug) : null,
     iat: now,
     exp: now + Math.max(60, ATTRIB_TTL_SEC),
   };
 
   const payloadJson = JSON.stringify(payload);
-  const p = b64urlUtf8(payloadJson);
+  const p = b64url(payloadJson);
   const sig = await hmacHex(payloadJson, HMAC_SECRET);
   const cookieValue = `${p}.${sig}`;
 
-  // --- 3) redirect + cookie set
-  const res = NextResponse.redirect(url.toString(), 302);
-  const secure = url.protocol === "https:";
+  const res = NextResponse.redirect(clean.toString(), 302);
 
   res.cookies.set(REF_COOKIE, cookieValue, {
     httpOnly: true,
-    secure,
+    secure: true,
     sameSite: "lax",
     path: "/",
     maxAge: TTL_DAYS * 24 * 60 * 60,
   });
 
-  // Debug cookie tarayıcıda GÖRÜNÜR (httpOnly=false)
-  res.cookies.set(DEBUG_COOKIE, `ok_${payload.scope}_${payload.verifiedSlug || "na"}_${payload.lid}`, {
-    httpOnly: false,
-    secure,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 30,
-  });
-
   res.headers.set("Cache-Control", "no-store");
-  // ekstra debug header (Network'te 302'de göreceksin)
-  res.headers.set("x-cabo-mw", "set_cookie_ok");
+  res.headers.set("x-cabo-mw", "ok:set_cookie");
+  setDebug(res, `ok_set_cookie_${Date.now()}`);
 
   return res;
 }
