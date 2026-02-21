@@ -15,12 +15,16 @@ function isPositiveInt(s: string) {
   return Number.isFinite(n) && n > 0 && Math.floor(n) === n;
 }
 
-function b64url(input: string) {
-  return Buffer.from(input, "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+/**
+ * Edge-safe base64url (NO Buffer)
+ */
+function base64UrlEncodeUtf8(input: string) {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  // btoa expects "binary string"
+  const b64 = btoa(binary);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function hexFromBytes(bytes: ArrayBuffer) {
@@ -59,8 +63,8 @@ export async function middleware(req: NextRequest) {
     return res;
   }
 
+  // güvenli attribution için verify url + secret şart
   if (!CABO_VERIFY_URL || !CABO_HMAC_SECRET) {
-    // verify url veya secret yoksa güvenli attribution yapamayız
     const res = NextResponse.next();
     res.cookies.delete("cabo_attrib");
     return res;
@@ -68,11 +72,7 @@ export async function middleware(req: NextRequest) {
 
   const pathname = url.pathname || "/";
   const parts = pathname.split("/").filter(Boolean);
-
-  // ✅ landing slug sadece landing modda kullanılmalı
-  const isLandingMode = CABO_ATTRIBUTION_SCOPE === "landing";
-  const landingSlug =
-    isLandingMode && parts.length >= 2 && parts[0] === "products" ? parts[1] : null;
+  const landingSlug = parts.length >= 2 && parts[0] === "products" ? parts[1] : null;
 
   const origin = url.origin;
   const ua = req.headers.get("user-agent") || "";
@@ -85,6 +85,7 @@ export async function middleware(req: NextRequest) {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        // Cabo verify origin allowlist check'i için:
         "x-testshop-origin": origin,
         "x-testshop-ua": ua,
         "x-testshop-referer": referer,
@@ -92,7 +93,6 @@ export async function middleware(req: NextRequest) {
       body: JSON.stringify({
         token,
         lid: Number(lidStr),
-        // ✅ sitewide modda slug yollama (slug_mismatch ile referral ölmesin)
         slug: landingSlug,
       }),
       cache: "no-store",
@@ -125,7 +125,7 @@ export async function middleware(req: NextRequest) {
       v: 1,
       token,
       lid: Number(lidStr),
-      scope: isLandingMode ? "landing" : "sitewide",
+      scope: CABO_ATTRIBUTION_SCOPE === "landing" ? "landing" : "sitewide",
       landingSlug: landingSlug,
       iat: now,
       exp: now + ttl,
@@ -139,16 +139,21 @@ export async function middleware(req: NextRequest) {
       return res;
     }
 
-    const cookieVal = `${b64url(json)}.${sig}`;
+    const cookieVal = `${base64UrlEncodeUtf8(json)}.${sig}`;
 
+    // URL’den token/lid temizle (senin ekranda temizlenmiyordu)
     const cleaned = new URL(req.url);
     cleaned.searchParams.delete("token");
     cleaned.searchParams.delete("lid");
 
     const res = NextResponse.redirect(cleaned, 302);
+
+    // HTTPS ise secure true; local dev HTTP ise false
+    const secure = cleaned.protocol === "https:";
+
     res.cookies.set("cabo_attrib", cookieVal, {
       httpOnly: true,
-      secure: true,
+      secure,
       sameSite: "lax",
       path: "/",
       maxAge: ttl,
