@@ -1,15 +1,22 @@
 // src/lib/cookies.ts
-import crypto from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 
 export type CookieStore = {
   get: (name: string) => { value: string } | undefined;
-  set?: (name: string, value: string, opts?: any) => void;
+  set?: (name: string, value: string, opts?: CookieOptions) => void;
   delete?: (name: string) => void;
+};
+
+export type CookieOptions = {
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "lax" | "strict" | "none";
+  path?: string;
+  maxAge?: number;
 };
 
 const CART_COOKIE = "cart_id";
 const REF_COOKIE = "cabo_attrib";
-
 const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim();
 
 function unb64url(s: string) {
@@ -20,13 +27,13 @@ function unb64url(s: string) {
 
 function sign(payloadJson: string) {
   if (!HMAC_SECRET) return "";
-  return crypto.createHmac("sha256", HMAC_SECRET).update(payloadJson).digest("hex");
+  return createHmac("sha256", HMAC_SECRET).update(payloadJson).digest("hex");
 }
 
 function timingSafeEq(a: string, b: string) {
   const A = Buffer.from(a);
   const B = Buffer.from(b);
-  return A.length === B.length && crypto.timingSafeEqual(A, B);
+  return A.length === B.length && timingSafeEqual(A, B);
 }
 
 export function readCartId(c: CookieStore) {
@@ -55,7 +62,6 @@ export type Referral = {
   exp: number;
 };
 
-// ✅ page.tsx’ler bunu import ediyor (senin hata 1)
 export type ReferralAttrib = Referral;
 
 export function readReferralCookie(c: CookieStore): Referral | null {
@@ -70,15 +76,18 @@ export function readReferralCookie(c: CookieStore): Referral | null {
     const expected = sign(json);
     if (!expected || !timingSafeEq(expected, sig)) return null;
 
-    const o = JSON.parse(json);
-    if (!o || o.v !== 1) return null;
+    const o = JSON.parse(json) as unknown;
+    if (typeof o !== "object" || o === null) return null;
 
-    const token = String(o.token || "").trim();
-    const lid = Number(o.lid);
-    const scope = o.scope === "landing" ? "landing" : "sitewide";
-    const landingSlug = o.landingSlug ? String(o.landingSlug) : null;
-    const iat = Number(o.iat);
-    const exp = Number(o.exp);
+    const obj = o as Record<string, unknown>;
+    if (obj.v !== 1) return null;
+
+    const token = String(obj.token || "").trim();
+    const lid = Number(obj.lid);
+    const scope = obj.scope === "landing" ? "landing" : "sitewide";
+    const landingSlug = obj.landingSlug ? String(obj.landingSlug) : null;
+    const iat = Number(obj.iat);
+    const exp = Number(obj.exp);
 
     if (!token || token.length < 16) return null;
     if (!Number.isFinite(lid) || lid <= 0) return null;

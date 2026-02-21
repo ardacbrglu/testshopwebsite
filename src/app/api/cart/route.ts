@@ -1,4 +1,4 @@
-// app/api/cart/route.ts
+// src/app/api/cart/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import {
@@ -8,6 +8,7 @@ import {
   isReferralValid,
   type CookieStore,
 } from "@/lib/cookies";
+import type { RawCartRow } from "@/lib/types";
 import {
   addCartItem,
   ensureCartId,
@@ -23,9 +24,9 @@ async function buildCartResponse(c: CookieStore, cartId: string) {
   writeCartId(c, cartId);
 
   const ref = readReferralCookie(c);
-  const raw = await getCartItemsRaw(cartId);
+  const raw: RawCartRow[] = await getCartItemsRaw(cartId);
 
-  const { items, subtotal, total, discount } = applyDiscountsToItems(raw as any, {
+  const { items, subtotal, total, discount } = applyDiscountsToItems(raw, {
     enabled: isReferralValid(ref),
     referral: ref,
   });
@@ -49,13 +50,43 @@ export async function GET() {
   return buildCartResponse(c, cartId);
 }
 
+type CartPostJson = { productId?: number; slug?: string; quantity?: number };
+
+async function parsePostBody(req: NextRequest): Promise<CartPostJson> {
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
+
+  if (ct.includes("application/json")) {
+    const body = (await req.json().catch(() => ({}))) as unknown;
+    if (typeof body !== "object" || body === null) return {};
+    const b = body as Record<string, unknown>;
+    return {
+      productId: typeof b.productId === "number" ? b.productId : undefined,
+      slug: typeof b.slug === "string" ? b.slug : undefined,
+      quantity: typeof b.quantity === "number" ? b.quantity : undefined,
+    };
+  }
+
+  // ✅ HTML form support (x-www-form-urlencoded or multipart)
+  if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
+    const fd = await req.formData().catch(() => null);
+    if (!fd) return {};
+    const slug = fd.get("slug");
+    const productId = fd.get("productId");
+    const quantity = fd.get("quantity");
+    return {
+      slug: typeof slug === "string" ? slug : undefined,
+      productId: typeof productId === "string" ? Number(productId) : undefined,
+      quantity: typeof quantity === "string" ? Number(quantity) : undefined,
+    };
+  }
+
+  return {};
+}
+
 export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as {
-    productId?: number;
-    slug?: string;
-    quantity?: number;
-  };
-  const { productId, slug, quantity = 1 } = body;
+  const body = await parsePostBody(req);
+  const { productId, slug } = body;
+  const quantity = Math.max(1, Number(body.quantity || 1));
 
   const c = (await cookies()) as unknown as CookieStore;
   const cartId = await ensureCartId(readCartId(c));
@@ -73,16 +104,21 @@ export async function POST(req: NextRequest) {
   await addCartItem({
     cartId,
     productId: Number(pid),
-    quantity: Math.max(1, Number(quantity) || 1),
+    quantity,
   });
 
   return buildCartResponse(c, cartId);
 }
 
 export async function PATCH(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as { productId?: number; quantity?: number };
-  const productId = Number(body?.productId);
-  const quantity = Number(body?.quantity);
+  const body = (await req.json().catch(() => ({}))) as unknown;
+  if (typeof body !== "object" || body === null) {
+    return NextResponse.json({ error: "INVALID_BODY" }, { status: 400 });
+  }
+  const b = body as Record<string, unknown>;
+
+  const productId = Number(b.productId);
+  const quantity = Number(b.quantity);
 
   if (!productId) return NextResponse.json({ error: "PRODUCT_ID_REQUIRED" }, { status: 400 });
 

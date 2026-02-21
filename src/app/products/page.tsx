@@ -17,10 +17,11 @@ function applyPct(priceCents: number, pct: number) {
   return Math.round(p * (1 - d / 100));
 }
 
-function normalizePct(v: any): number {
+function normalizePct(v: unknown): number {
   if (v == null) return 0;
   if (typeof v === "number") return v <= 1 ? v * 100 : v;
-  const s = String(v).trim();
+  if (typeof v !== "string") return 0;
+  const s = v.trim();
   if (!s) return 0;
   if (s.endsWith("%")) {
     const n = Number(s.slice(0, -1));
@@ -34,7 +35,6 @@ function normalizePct(v: any): number {
 export default async function ProductsPage() {
   const products: Product[] = await getAllProducts();
 
-  // ✅ Referral cookie -> indirim rule’ları
   const c = (await cookies()) as unknown as CookieStore;
   const ref = readReferralCookie(c);
   const refOk = isReferralValid(ref);
@@ -47,7 +47,7 @@ export default async function ProductsPage() {
       <div className="mb-6 flex items-end justify-between">
         <h1 className="text-2xl font-semibold">Products</h1>
         <Link href="/cart" className="text-sm underline underline-offset-4">
-          Go to Cart
+          Cart
         </Link>
       </div>
 
@@ -66,7 +66,6 @@ export default async function ProductsPage() {
               className="rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4 hover:bg-neutral-950/60 transition"
             >
               <div className="aspect-[16/10] w-full overflow-hidden rounded-xl bg-neutral-900">
-                {/* imageUrl boş olabilir; bozmuyoruz */}
                 {p.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={p.imageUrl} alt={p.name} className="h-full w-full object-cover" />
@@ -92,12 +91,6 @@ export default async function ProductsPage() {
                     <div className="text-xl font-semibold">{formatCentsTRY(p.priceCents)}</div>
                   )}
                 </div>
-
-                {hasDiscount ? (
-                  <div className="mt-2 text-xs text-neutral-400">
-                    Referral discount active
-                  </div>
-                ) : null}
               </div>
             </Link>
           );

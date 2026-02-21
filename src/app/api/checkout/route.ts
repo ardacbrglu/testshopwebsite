@@ -1,4 +1,4 @@
-// app/api/checkout/route.ts
+// src/app/api/checkout/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import {
@@ -7,6 +7,7 @@ import {
   isReferralValid,
   type CookieStore,
 } from "@/lib/cookies";
+import type { RawCartRow } from "@/lib/types";
 import {
   ensureCartId,
   getCartItemsRaw,
@@ -30,29 +31,30 @@ export async function POST() {
     const email = await getCartEmail(cartId);
     if (!email) return NextResponse.json({ error: "EMAIL_REQUIRED" }, { status: 400 });
 
-    const raw = await getCartItemsRaw(cartId);
+    const raw: RawCartRow[] = await getCartItemsRaw(cartId);
     if (!raw.length) return NextResponse.json({ error: "CART_EMPTY" }, { status: 400 });
 
+    // İndirim (landing/sitewide kurallarıyla)
     const ref = readReferralCookie(c);
-
-    const { items, total } = applyDiscountsToItems(raw as any, {
+    const { items, total } = applyDiscountsToItems(raw, {
       enabled: isReferralValid(ref),
       referral: ref,
     });
 
     // 1) siparişi kaydet
-    const orderId = await recordOrder(email, items as any, total);
+    const orderId = await recordOrder(email, items, total);
 
-    // 2) Cabo POST (ref geçerliyse + webhook url varsa)
-    const webhook = (process.env.CABO_WEBHOOK_URL || "").trim();
-    if (ref && isReferralValid(ref) && webhook) {
+    // 2) Cabo POST (ref geçerliyse)
+    if (ref && isReferralValid(ref) && (process.env.CABO_WEBHOOK_URL || "").length > 0) {
       const byIds = String(process.env.CABO_USE_PRODUCT_IDS || "0") === "1";
       const map = loadMap();
       const scope = getAttributionScope();
 
-      const effective = items.filter((it: any) => isSlugEligible(scope, map, it.slug, ref));
+      // yalnızca eligible (landing/sitewide) olan satın alınan ürünler post edilsin
+      const effective = items.filter((it) => isSlugEligible(scope, map, it.slug, ref));
+
       if (effective.length) {
-        const caboItems = effective.map((it: any) => ({
+        const caboItems = effective.map((it) => ({
           product_id: byIds ? it.productId : undefined,
           product_code: !byIds ? (map[it.slug]?.code || undefined) : undefined,
           quantity: it.quantity,

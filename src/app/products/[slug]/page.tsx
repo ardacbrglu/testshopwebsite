@@ -1,7 +1,7 @@
 // src/app/products/[slug]/page.tsx
 import { notFound } from "next/navigation";
-import { cookies } from "next/headers";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { getProductBySlug } from "@/lib/queries";
 import type { Product } from "@/lib/types";
 import { readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
@@ -18,10 +18,11 @@ function applyPct(priceCents: number, pct: number) {
   return Math.round(p * (1 - d / 100));
 }
 
-function normalizePct(v: any): number {
+function normalizePct(v: unknown): number {
   if (v == null) return 0;
   if (typeof v === "number") return v <= 1 ? v * 100 : v;
-  const s = String(v).trim();
+  if (typeof v !== "string") return 0;
+  const s = v.trim();
   if (!s) return 0;
   if (s.endsWith("%")) {
     const n = Number(s.slice(0, -1));
@@ -30,36 +31,6 @@ function normalizePct(v: any): number {
   const n = Number(s);
   if (!Number.isFinite(n)) return 0;
   return n <= 1 ? n * 100 : n;
-}
-
-// --- Client Add-to-Cart button (inline client component)
-function AddToCartButton({ slug }: { slug: string }) {
-  "use client";
-  const [loading, setLoading] = require("react").useState(false);
-
-  async function add() {
-    try {
-      setLoading(true);
-      await fetch("/api/cart", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        // ✅ product_id değil, slug gönderiyoruz (TS hatasını bitirir)
-        body: JSON.stringify({ slug, quantity: 1 }),
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <button
-      onClick={add}
-      disabled={loading}
-      className="mt-5 w-full rounded-xl border border-neutral-700 px-4 py-3 hover:bg-neutral-900 disabled:opacity-60"
-    >
-      {loading ? "Adding..." : "Add to cart"}
-    </button>
-  );
 }
 
 export default async function ProductDetailPage({ params }: { params: { slug: string } }) {
@@ -124,13 +95,17 @@ export default async function ProductDetailPage({ params }: { params: { slug: st
             )}
           </div>
 
-          {hasDiscount ? (
-            <div className="mt-2 text-xs text-neutral-400">
-              Referral discount active
-            </div>
-          ) : null}
-
-          <AddToCartButton slug={product.slug} />
+          {/* ✅ Server-side form POST to /api/cart (route.ts now supports formData) */}
+          <form action="/api/cart" method="post" className="mt-5">
+            <input type="hidden" name="slug" value={product.slug} />
+            <input type="hidden" name="quantity" value="1" />
+            <button
+              type="submit"
+              className="w-full rounded-xl border border-neutral-700 px-4 py-3 hover:bg-neutral-900"
+            >
+              Add to cart
+            </button>
+          </form>
         </div>
       </div>
     </div>
