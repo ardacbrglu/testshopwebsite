@@ -17,10 +17,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="fixed right-4 bottom-4 space-y-2 z-50">
         {items.map((t) => (
-          <div key={t.id} className={`px-3 py-2 rounded-lg border text-sm
-            ${t.type === "success" ? "border-emerald-500 text-emerald-300" :
-              t.type === "error" ? "border-red-500 text-red-300" :
-              "border-neutral-600 text-neutral-200"}`}>
+          <div
+            key={t.id}
+            className={`px-3 py-2 rounded-lg border text-sm
+            ${
+              t.type === "success"
+                ? "border-emerald-500 text-emerald-300"
+                : t.type === "error"
+                ? "border-red-500 text-red-300"
+                : "border-neutral-600 text-neutral-200"
+            }`}
+          >
             {t.title}
           </div>
         ))}
@@ -31,6 +38,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 export function useToast() {
   const ctx = useContext(Ctx);
-  if (!ctx) throw new Error("ToastProvider missing");
-  return ctx;
+  // ✅ Provider unutulsa bile app crash etmesin
+  return ctx ?? { show: () => {} };
 }

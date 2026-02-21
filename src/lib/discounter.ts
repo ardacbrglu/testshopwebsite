@@ -1,27 +1,6 @@
 // src/lib/discounter.ts
 import { isReferralValid, type Referral } from "@/lib/cookies";
-
-export type RawCartRow = {
-  productId: number;
-  slug: string;
-  name: string;
-  imageUrl: string;
-  quantity: number;
-  unitPriceCents: number;
-};
-
-export type ApiCartItem = {
-  productId: number;
-  slug: string;
-  name: string;
-  imageUrl: string;
-  quantity: number;
-  unitPriceCents: number;
-
-  discountPct: number;          // 0..100
-  finalUnitPriceCents: number;  // discounted unit
-  lineFinalCents: number;       // finalUnit * qty
-};
+import type { RawCartRow, ApiCartItem } from "@/lib/types";
 
 type MapEntry = { code?: string; discount?: string | number };
 type CaboMap = Record<string, MapEntry>;
@@ -52,26 +31,16 @@ function normalizePct(p: string | number | undefined): number {
   return n <= 1 ? n * 100 : n;
 }
 
-export function isSlugEligible(
-  scope: "landing" | "sitewide",
-  map: CaboMap,
-  slug: string,
-  ref: Referral
-) {
-  // map’te yoksa eligible değil
+export function isSlugEligible(scope: "landing" | "sitewide", map: CaboMap, slug: string, ref: Referral) {
   if (!map[slug]?.discount) return false;
-
   if (scope === "sitewide") return true;
 
-  // landing mod: yalnız landingSlug ile eşleşen slug
-  if (!ref?.landingSlug) return false;
-  return ref.landingSlug === slug;
+  // landing: sadece verify'dan gelen gerçek slug
+  if (!ref?.verifiedSlug) return false;
+  return ref.verifiedSlug === slug;
 }
 
-export function applyDiscountsToItems(
-  raw: RawCartRow[],
-  opts: { enabled: boolean; referral: Referral | null }
-) {
+export function applyDiscountsToItems(raw: RawCartRow[], opts: { enabled: boolean; referral: Referral | null }) {
   const map = loadMap();
   const scope = getAttributionScope();
   const ref = opts.referral;
@@ -111,6 +80,5 @@ export function applyDiscountsToItems(
   });
 
   const discount = Math.max(0, subtotal - total);
-
   return { items, subtotal, total, discount };
 }

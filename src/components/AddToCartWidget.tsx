@@ -1,13 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useToast } from "./Toast";
+import { useToast } from "@/components/Toast";
 
-export default function AddToCartWidget(props: {
-  slug: string;
-  productId: number;
-  caboRef?: { token: string; lid: string } | null;
-}) {
+export default function AddToCartWidget(props: { slug: string; productId: number }) {
   const { slug, productId } = props;
   const [qty, setQty] = useState<number>(1);
   const { show } = useToast();
@@ -18,6 +14,7 @@ export default function AddToCartWidget(props: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slug, productId, quantity: qty }),
     });
+
     if (r.ok) show({ type: "success", title: "Sepete eklendi" });
     else show({ type: "error", title: "Sepete eklenemedi" });
   }
@@ -33,7 +30,8 @@ export default function AddToCartWidget(props: {
           +
         </button>
       </div>
-      <button className="btn" onClick={add}>
+
+      <button onClick={add} className="rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900">
         Sepete ekle
       </button>
     </div>

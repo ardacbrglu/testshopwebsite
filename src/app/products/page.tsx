@@ -6,21 +6,16 @@ export const revalidate = 0;
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { getAllProducts } from "@/lib/queries";
-import type { Product } from "@/lib/types";
 import { readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
 import { loadMap, getAttributionScope, isSlugEligible } from "@/lib/discounter";
-
-function formatCentsTRY(cents: number) {
-  const value = (Number(cents || 0) / 100).toFixed(2);
-  return new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" }).format(Number(value));
-}
+import { formatTRY } from "@/lib/money";
+import AddToCartWidget from "@/components/AddToCartWidget";
 
 function applyPct(priceCents: number, pct: number) {
   const p = Math.max(0, Number(priceCents) || 0);
   const d = Math.max(0, Math.min(95, Number(pct) || 0));
   return Math.round(p * (1 - d / 100));
 }
-
 function normalizePct(v: unknown): number {
   if (v == null) return 0;
   if (typeof v === "number") return v <= 1 ? v * 100 : v;
@@ -37,7 +32,6 @@ function normalizePct(v: unknown): number {
 }
 
 export default async function ProductsPage() {
-  // ✅ cookies() çağrısı + dynamic exports => Next bu sayfayı build'de SSG etmeye kalkmaz.
   const c = (await cookies()) as unknown as CookieStore;
   const ref = readReferralCookie(c);
   const refOk = isReferralValid(ref);
@@ -45,25 +39,33 @@ export default async function ProductsPage() {
   const map = loadMap();
   const scope = getAttributionScope();
 
-  const products: Product[] = await getAllProducts();
+  const products = await getAllProducts();
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="text-sm underline underline-offset-4">
-          ← Home
-        </Link>
+        <h1 className="text-2xl font-semibold">Products</h1>
         <Link href="/cart" className="text-sm underline underline-offset-4">
-          Cart
+          Cart →
         </Link>
       </div>
 
-      <h1 className="text-2xl font-semibold">Products</h1>
-      <p className="mt-2 text-sm text-neutral-400">
-        {refOk ? "Referral active: eligible products show discounted prices." : "No active referral."}
-      </p>
+      <div className="mb-6 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4 text-sm text-neutral-300">
+        <div>
+          Referral:{" "}
+          <span className={refOk ? "text-emerald-300" : "text-neutral-400"}>
+            {refOk ? "ACTIVE" : "NONE"}
+          </span>
+        </div>
+        {refOk && ref ? (
+          <div className="mt-1 text-neutral-400">
+            scope: {scope} | token: {ref.token.slice(0, 8)}… | lid: {ref.lid}
+            {ref.verifiedSlug ? ` | verifiedSlug: ${ref.verifiedSlug}` : ""}
+          </div>
+        ) : null}
+      </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {products.map((p) => {
           const eligible = refOk && ref ? isSlugEligible(scope, map, p.slug, ref) : false;
           const pct = eligible ? normalizePct(map[p.slug]?.discount) : 0;
@@ -71,52 +73,27 @@ export default async function ProductsPage() {
           const finalCents = hasDiscount ? applyPct(p.priceCents, pct) : p.priceCents;
 
           return (
-            <div
-              key={p.slug}
-              className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950/40"
-            >
+            <div key={p.slug} className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-950/40">
               <Link href={`/products/${p.slug}`} className="block">
-                {p.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={p.imageUrl} alt={p.name} className="h-48 w-full object-cover" />
-                ) : (
-                  <div className="h-48 w-full bg-neutral-900" />
-                )}
-
                 <div className="p-4">
                   <div className="text-lg font-semibold">{p.name}</div>
                   <div className="mt-2 flex items-center gap-3">
+                    <div className="font-semibold">{formatTRY(finalCents)}</div>
                     {hasDiscount ? (
                       <>
-                        <div className="text-base font-semibold">{formatCentsTRY(finalCents)}</div>
-                        <div className="text-xs text-neutral-400 line-through">
-                          {formatCentsTRY(p.priceCents)}
-                        </div>
+                        <div className="text-xs text-neutral-500 line-through">{formatTRY(p.priceCents)}</div>
                         <div className="text-[11px] rounded-full border border-neutral-700 px-2 py-1">
                           -{Math.round(pct)}%
                         </div>
                       </>
-                    ) : (
-                      <div className="text-base font-semibold">{formatCentsTRY(p.priceCents)}</div>
-                    )}
+                    ) : null}
                   </div>
-
                   <div className="mt-3 text-sm text-neutral-400 line-clamp-2">{p.description}</div>
                 </div>
               </Link>
 
-              {/* Add to cart (server form POST) */}
               <div className="p-4 pt-0">
-                <form action="/api/cart" method="post">
-                  <input type="hidden" name="slug" value={p.slug} />
-                  <input type="hidden" name="quantity" value="1" />
-                  <button
-                    type="submit"
-                    className="w-full rounded-xl border border-neutral-700 px-4 py-2 hover:bg-neutral-900"
-                  >
-                    Add to cart
-                  </button>
-                </form>
+                <AddToCartWidget slug={p.slug} productId={p.id} />
               </div>
             </div>
           );

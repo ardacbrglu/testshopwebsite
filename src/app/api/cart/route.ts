@@ -1,23 +1,9 @@
 // src/app/api/cart/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import {
-  readCartId,
-  writeCartId,
-  readReferralCookie,
-  isReferralValid,
-  type CookieStore,
-} from "@/lib/cookies";
+import { readCartId, writeCartId, readReferralCookie, isReferralValid, type CookieStore } from "@/lib/cookies";
 import type { RawCartRow } from "@/lib/types";
-import {
-  addCartItem,
-  ensureCartId,
-  getCartItemsRaw,
-  setItemQuantity,
-  removeItem,
-  getProductBySlug,
-  getCartEmail,
-} from "@/lib/queries";
+import { addCartItem, ensureCartId, getCartItemsRaw, setItemQuantity, removeItem, getProductBySlug, getCartEmail, setCartEmail } from "@/lib/queries";
 import { applyDiscountsToItems } from "@/lib/discounter";
 
 async function buildCartResponse(c: CookieStore, cartId: string) {
@@ -66,7 +52,6 @@ async function parsePostBody(req: NextRequest): Promise<CartPostJson> {
     };
   }
 
-  // ✅ HTML form support (x-www-form-urlencoded or multipart)
   if (ct.includes("application/x-www-form-urlencoded") || ct.includes("multipart/form-data")) {
     const fd = await req.formData().catch(() => null);
     if (!fd) return {};
@@ -81,6 +66,11 @@ async function parsePostBody(req: NextRequest): Promise<CartPostJson> {
   }
 
   return {};
+}
+
+function wantsHtml(req: NextRequest) {
+  const accept = (req.headers.get("accept") || "").toLowerCase();
+  return accept.includes("text/html") && !accept.includes("application/json");
 }
 
 export async function POST(req: NextRequest) {
@@ -101,11 +91,10 @@ export async function POST(req: NextRequest) {
   }
   if (!pid) return NextResponse.json({ error: "PRODUCT_ID_OR_SLUG_REQUIRED" }, { status: 400 });
 
-  await addCartItem({
-    cartId,
-    productId: Number(pid),
-    quantity,
-  });
+  await addCartItem({ cartId, productId: Number(pid), quantity });
+
+  // ✅ Eğer browser form submit ise JSON göstermeyelim → /cart’a yönlendir
+  if (wantsHtml(req)) return NextResponse.redirect(new URL("/cart", req.url), 303);
 
   return buildCartResponse(c, cartId);
 }
@@ -117,13 +106,22 @@ export async function PATCH(req: NextRequest) {
   }
   const b = body as Record<string, unknown>;
 
+  const c = (await cookies()) as unknown as CookieStore;
+  const cartId = await ensureCartId(readCartId(c));
+
+  // ✅ email update
+  if (typeof b.email === "string") {
+    const email = String(b.email).trim();
+    if (!email || !email.includes("@")) return NextResponse.json({ error: "EMAIL_INVALID" }, { status: 400 });
+    await setCartEmail(cartId, email);
+    return buildCartResponse(c, cartId);
+  }
+
+  // ✅ quantity update
   const productId = Number(b.productId);
   const quantity = Number(b.quantity);
 
   if (!productId) return NextResponse.json({ error: "PRODUCT_ID_REQUIRED" }, { status: 400 });
-
-  const c = (await cookies()) as unknown as CookieStore;
-  const cartId = await ensureCartId(readCartId(c));
 
   await setItemQuantity({
     cartId,

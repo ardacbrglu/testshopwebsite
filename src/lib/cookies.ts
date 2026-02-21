@@ -45,7 +45,7 @@ export function writeCartId(c: CookieStore, cartId: string) {
   try {
     c.set?.(CART_COOKIE, String(cartId), {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 30,
@@ -57,12 +57,10 @@ export type Referral = {
   token: string;
   lid: number;
   scope: "landing" | "sitewide";
-  landingSlug: string | null;
+  verifiedSlug: string | null;
   iat: number;
   exp: number;
 };
-
-export type ReferralAttrib = Referral;
 
 export function readReferralCookie(c: CookieStore): Referral | null {
   try {
@@ -85,7 +83,7 @@ export function readReferralCookie(c: CookieStore): Referral | null {
     const token = String(obj.token || "").trim();
     const lid = Number(obj.lid);
     const scope = obj.scope === "landing" ? "landing" : "sitewide";
-    const landingSlug = obj.landingSlug ? String(obj.landingSlug) : null;
+    const verifiedSlug = typeof obj.verifiedSlug === "string" ? String(obj.verifiedSlug) : null;
     const iat = Number(obj.iat);
     const exp = Number(obj.exp);
 
@@ -93,7 +91,7 @@ export function readReferralCookie(c: CookieStore): Referral | null {
     if (!Number.isFinite(lid) || lid <= 0) return null;
     if (!Number.isFinite(iat) || !Number.isFinite(exp)) return null;
 
-    return { token, lid, scope, landingSlug, iat, exp };
+    return { token, lid, scope, verifiedSlug, iat, exp };
   } catch {
     return null;
   }
