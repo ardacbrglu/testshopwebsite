@@ -6,9 +6,14 @@ export const runtime = "edge";
 /**
  * TestShop — Cabo Attribution Middleware (PROD)
  *
- * - URL'de token & lid varsa Cabo Verify çağırır
- * - Verify OK ise attribution cookie ("cabo_attrib") set eder
- * - URL'den token/lid temizlemek için redirect yapar
+ * FIX:
+ * - Railway edge ortamında req.url bazen internal origin (https://localhost:8080) dönebiliyor.
+ * - Cabo allowlist kontrolü için "public origin" hesaplayıp x-testshop-origin olarak onu gönderiyoruz.
+ *
+ * Akış:
+ * - URL'de token & lid varsa Cabo Verify çağır
+ * - Verify OK ise attribution cookie ("cabo_attrib") set et
+ * - URL'den token/lid temizlemek için redirect yap
  *
  * Not:
  * - Middleware fetch istekleri browser Network tabında görünmez.
@@ -24,6 +29,10 @@ const ATTRIB_TTL_SEC = Number(process.env.CABO_ATTRIB_TTL_SEC || 36000);
 const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim(); // e.g. https://cabo.../api/testshop_verify
 const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim();
 const ATTR_SCOPE_ENV = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim();
+
+// Opsiyonel override (istersen ekleyebilirsin):
+// CABO_PUBLIC_ORIGIN=https://testshopwebsite-production.up.railway.app
+const PUBLIC_ORIGIN_OVERRIDE = String(process.env.CABO_PUBLIC_ORIGIN || "").trim().replace(/\/+$/, "");
 
 function b64url(input: string) {
   const bytes = new TextEncoder().encode(input);
@@ -69,6 +78,32 @@ function setDebugCookie(res: NextResponse, val: string, url: URL) {
   });
 }
 
+function firstHeaderValue(h: string | null) {
+  if (!h) return "";
+  // "a,b,c" gelirse ilkini al
+  return h.split(",")[0]?.trim() || "";
+}
+
+/**
+ * Railway/Proxy arkasında gerçek public origin hesapla.
+ * - x-forwarded-proto + x-forwarded-host (en doğru)
+ * - yoksa host + req.url protokolü fallback
+ * - override env varsa onu kullan
+ */
+function getPublicOrigin(req: NextRequest, url: URL) {
+  if (PUBLIC_ORIGIN_OVERRIDE) return PUBLIC_ORIGIN_OVERRIDE;
+
+  const xfProto = firstHeaderValue(req.headers.get("x-forwarded-proto"));
+  const xfHost = firstHeaderValue(req.headers.get("x-forwarded-host"));
+
+  const host = xfHost || firstHeaderValue(req.headers.get("host")) || url.host;
+  const proto = xfProto || url.protocol.replace(":", "") || "https";
+
+  if (!host) return url.origin.replace(/\/+$/, "");
+
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
 export const config = {
   matcher: ["/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
@@ -79,10 +114,8 @@ export async function middleware(req: NextRequest) {
   const token = (url.searchParams.get("token") || "").trim();
   const lid = parsePositiveInt(url.searchParams.get("lid"));
 
-  // token/lid yoksa normal devam
   if (!token || !lid) return NextResponse.next();
 
-  // token/lid var ama invalid -> sadece temizle
   if (!isLikelyValidToken(token)) {
     url.searchParams.delete("token");
     url.searchParams.delete("lid");
@@ -92,7 +125,6 @@ export async function middleware(req: NextRequest) {
     return res;
   }
 
-  // env eksikse: temizle + debug
   if (!VERIFY_URL || !HMAC_SECRET) {
     url.searchParams.delete("token");
     url.searchParams.delete("lid");
@@ -104,22 +136,23 @@ export async function middleware(req: NextRequest) {
 
   const slug = safeSlugFromPath(url.pathname);
 
-  // Verify çağrısı: browser network’te görünmez. debug’i response’a taşıyacağız.
   let verifyStatus = 0;
   let verifyOk = false;
   let verifiedSlug: string | null = null;
 
-  // Cabo’dan gelen debug header’ları forward edeceğiz
   const forwarded: Record<string, string> = {};
+
+  // ✅ gerçek public origin
+  const publicOrigin = getPublicOrigin(req, url);
 
   try {
     const r = await fetch(`${VERIFY_URL.replace(/\/$/, "")}/verify`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        // Cabo allowlist için asıl sinyal:
-        "x-testshop-origin": url.origin,
-        // Cabo click write için meta:
+        // ✅ Cabo allowlist için doğru origin:
+        "x-testshop-origin": publicOrigin,
+        // meta:
         "x-testshop-ua": req.headers.get("user-agent") || "",
         "x-testshop-referer": req.headers.get("referer") || "",
       },
@@ -129,7 +162,7 @@ export async function middleware(req: NextRequest) {
 
     verifyStatus = r.status;
 
-    // Cabo debug header’larını yakala (Cabo tarafında ekleyeceğiz)
+    // Cabo debug header’larını yakala
     const h = r.headers;
     const keys = ["x-cabo-origin", "x-cabo-claimed", "x-cabo-allowed", "x-cabo-allowed-origin"];
     for (const k of keys) {
@@ -147,31 +180,33 @@ export async function middleware(req: NextRequest) {
         }
       }
     }
-  } catch (e) {
+  } catch {
     verifyOk = false;
     verifyStatus = 0;
     forwarded["x-cabo-allowed"] = "fetch_error";
   }
 
-  // URL temizle (her durumda)
+  // URL temizle
   url.searchParams.delete("token");
   url.searchParams.delete("lid");
 
-  // FAIL => sadece redirect + debug
   if (!verifyOk) {
     const res = NextResponse.redirect(url.toString(), 302);
     res.headers.set("Cache-Control", "no-store");
     res.headers.set("x-cabo-mw", `fail:verify_http_${verifyStatus || "0"}:${verifyStatus || "0"}`);
     res.headers.set("x-cabo-status", String(verifyStatus || 0));
 
-    // Cabo debug header’larını browser’da görmek için forward
+    // debug forward
     for (const [k, v] of Object.entries(forwarded)) res.headers.set(k, v);
+
+    // Ek debug: middleware’in hesapladığı publicOrigin’i de göster
+    res.headers.set("x-testshop-public-origin", publicOrigin);
 
     setDebugCookie(res, `fail_verify_http_${verifyStatus || 0}_${Date.now()}`, url);
     return res;
   }
 
-  // OK => attribution cookie set et
+  // OK => attribution cookie
   const now = Math.floor(Date.now() / 1000);
   const scope = ATTR_SCOPE_ENV === "landing" ? "landing" : "sitewide";
 
@@ -194,7 +229,9 @@ export async function middleware(req: NextRequest) {
   res.headers.set("Cache-Control", "no-store");
   res.headers.set("x-cabo-mw", "ok:set_cookie");
   res.headers.set("x-cabo-status", String(verifyStatus || 200));
+
   for (const [k, v] of Object.entries(forwarded)) res.headers.set(k, v);
+  res.headers.set("x-testshop-public-origin", publicOrigin);
 
   res.cookies.set(REF_COOKIE, cookieValue, {
     httpOnly: true,
@@ -204,7 +241,6 @@ export async function middleware(req: NextRequest) {
     maxAge: TTL_DAYS * 24 * 60 * 60,
   });
 
-  // Debug cookie: OK
   setDebugCookie(res, `ok_${Date.now()}`, url);
 
   return res;
