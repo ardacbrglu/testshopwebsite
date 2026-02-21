@@ -83,7 +83,15 @@ export function readReferralCookie(c: CookieStore): Referral | null {
     const token = String(obj.token || "").trim();
     const lid = Number(obj.lid);
     const scope = obj.scope === "landing" ? "landing" : "sitewide";
-    const verifiedSlug = typeof obj.verifiedSlug === "string" ? String(obj.verifiedSlug) : null;
+
+    // ✅ hem verifiedSlug hem landingSlug kabul
+    const verifiedSlug =
+      typeof obj.verifiedSlug === "string"
+        ? String(obj.verifiedSlug)
+        : typeof (obj as any).landingSlug === "string"
+        ? String((obj as any).landingSlug)
+        : null;
+
     const iat = Number(obj.iat);
     const exp = Number(obj.exp);
 
