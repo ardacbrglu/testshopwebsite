@@ -4,19 +4,23 @@ import { NextResponse, type NextRequest } from "next/server";
 export const runtime = "edge";
 
 /**
- * TestShop — Cabo Attribution Middleware
+ * TestShop — Cabo Attribution Middleware (DEBUG'lı)
  *
- * Amaç:
- * - URL'de token & lid varsa -> Cabo Verify çağır
- * - Verify ok ise -> HMAC'li attribution cookie ("cabo_attrib") set et
- * - Sonra URL'den token/lid temizlemek için redirect yap
+ * - token&lid varsa Cabo verify çağırır
+ * - OK ise cabo_attrib cookie set eder + URL'den token/lid temizler
+ * - FAIL ise URL temizler ama cabo_attrib set etmez
+ * - FAIL detayını kısa süreli cabo_debug cookie ile yazar (debug için)
  */
 
 const REF_COOKIE = "cabo_attrib";
+const DEBUG_COOKIE = "cabo_debug";
+
 const TTL_DAYS = Number(process.env.CABO_COOKIE_TTL_DAYS || 14);
 const ATTRIB_TTL_SEC = Number(process.env.CABO_ATTRIB_TTL_SEC || 36000);
-const VERIFY_URL = String(process.env.CABO_VERIFY_URL || "").trim();
+
+const VERIFY_BASE = String(process.env.CABO_VERIFY_URL || "").trim(); // Örn: https://cabo-domain.com/api/testshop_verify
 const HMAC_SECRET = String(process.env.CABO_HMAC_SECRET || "").trim();
+const DEBUG = String(process.env.CABO_DEBUG || "1") === "1"; // prod’da istersen 0 yaparsın
 
 function b64url(input: string) {
   const bytes = new TextEncoder().encode(input);
@@ -57,10 +61,21 @@ function safeSlugFromPath(pathname: string) {
 }
 
 export const config = {
-  matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
-  ],
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)"],
 };
+
+function setDebug(res: NextResponse, secure: boolean, msg: string) {
+  if (!DEBUG) return;
+  // kısa ve okunur kalsın
+  const v = msg.slice(0, 380);
+  res.cookies.set(DEBUG_COOKIE, v, {
+    httpOnly: false,
+    secure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 10, // 10 dakika
+  });
+}
 
 export async function middleware(req: NextRequest) {
   const url = new URL(req.url);
@@ -70,15 +85,23 @@ export async function middleware(req: NextRequest) {
   if (!token || !lid) return NextResponse.next();
 
   if (!isLikelyValidToken(token)) return NextResponse.next();
-  if (!VERIFY_URL || !HMAC_SECRET) return NextResponse.next();
+
+  // env yoksa hiç dokunma (URL de temizlenmesin ki anlayalım)
+  if (!VERIFY_BASE || !HMAC_SECRET) return NextResponse.next();
 
   const slug = safeSlugFromPath(url.pathname);
+
+  const verifyUrl = `${VERIFY_BASE.replace(/\/$/, "")}/verify`;
+  const secure = url.protocol === "https:";
 
   let verifyOk = false;
   let verifiedSlug: string | null = null;
 
+  let debugStatus = "no_call";
+  let debugBody = "";
+
   try {
-    const r = await fetch(`${VERIFY_URL.replace(/\/$/, "")}/verify`, {
+    const r = await fetch(verifyUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -90,23 +113,38 @@ export async function middleware(req: NextRequest) {
       cache: "no-store",
     });
 
-    if (r.ok) {
-      const data = (await r.json().catch(() => null)) as any;
-      if (data && data.ok === true) {
-        verifyOk = true;
-        verifiedSlug = typeof data.slug === "string" ? data.slug : null;
-      }
+    debugStatus = `status=${r.status}`;
+
+    const text = await r.text().catch(() => "");
+    debugBody = text.slice(0, 220);
+
+    // tekrar json parse etmeye çalış
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {}
+
+    if (r.ok && data && data.ok === true) {
+      verifyOk = true;
+      verifiedSlug = typeof data.slug === "string" ? data.slug : null;
     }
-  } catch {
-    verifyOk = false;
+  } catch (e: any) {
+    debugStatus = `fetch_error=${String(e?.message || e).slice(0, 120)}`;
   }
 
+  // URL her durumda temizlensin (senin istediğin davranış)
+  url.searchParams.delete("token");
+  url.searchParams.delete("lid");
+
+  // FAIL: cookie yok ama debug cookie var
   if (!verifyOk) {
-    url.searchParams.delete("token");
-    url.searchParams.delete("lid");
-    return NextResponse.redirect(url.toString(), 302);
+    const res = NextResponse.redirect(url.toString(), 302);
+    res.headers.set("Cache-Control", "no-store");
+    setDebug(res, secure, `FAIL verifyUrl=${verifyUrl} ${debugStatus} body=${debugBody}`);
+    return res;
   }
 
+  // OK: attribution cookie set et
   const now = Math.floor(Date.now() / 1000);
   const scopeEnv = String(process.env.CABO_ATTRIBUTION_SCOPE || "sitewide").trim();
   const scope = scopeEnv === "landing" ? "landing" : "sitewide";
@@ -126,11 +164,7 @@ export async function middleware(req: NextRequest) {
   const sig = await hmacHex(payloadJson, HMAC_SECRET);
   const cookieValue = `${p}.${sig}`;
 
-  url.searchParams.delete("token");
-  url.searchParams.delete("lid");
-
   const res = NextResponse.redirect(url.toString(), 302);
-  const secure = url.protocol === "https:";
 
   res.cookies.set(REF_COOKIE, cookieValue, {
     httpOnly: true,
@@ -139,6 +173,9 @@ export async function middleware(req: NextRequest) {
     path: "/",
     maxAge: TTL_DAYS * 24 * 60 * 60,
   });
+
+  // debug cookie: success
+  setDebug(res, secure, `OK verifyUrl=${verifyUrl} lid=${lid} scope=${scope} vSlug=${verifiedSlug || ""}`);
 
   res.headers.set("Cache-Control", "no-store");
   return res;
